@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <Arduino_FreeRTOS.h>
+#include <Wire.h>
 #include "debounce_button.h"
 
 #define PIN_BT4 2
@@ -31,14 +32,12 @@ extern volatile SystemState currentState;
 extern volatile bool ledFlag;
 extern volatile bool buzFlag;
 
-extern TaskHandle_t txTaskHandle;
-extern TaskHandle_t rxTaskHandle;
+extern TaskHandle_t commsTaskHandle;
 
 void DebugTask(void *pvParameters);
 void LEDTask(void *pvParameters);
 void BUZTask(void *pvParameters);
-void TxTask(void *pvParameters);
-void RxTask(void *pvParameters);
+void CommsTask(void *pvParameters);
 void MainTask(void *pvParameters);
 
 #endif

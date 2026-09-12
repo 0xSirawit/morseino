@@ -4,8 +4,7 @@ volatile SystemState currentState = STATE_IDLE;
 volatile bool ledFlag = false;
 volatile bool buzFlag = false;
 
-TaskHandle_t txTaskHandle = NULL;
-TaskHandle_t rxTaskHandle = NULL;
+TaskHandle_t commsTaskHandle = NULL;
 
 DebouncedButton btn1(PIN_BT1, BUTTON_PRESSED);
 DebouncedButton btn2(PIN_BT2, BUTTON_PRESSED);
@@ -26,16 +25,14 @@ void setup() {
   pinMode(PIN_BUZ, OUTPUT);
   
   // Core Tasks
-  xTaskCreate(LEDTask, "LED_Task", 85, NULL, 1, NULL);
-  xTaskCreate(BUZTask, "BUZ_Task", 85, NULL, 1, NULL);
+  xTaskCreate(LEDTask, "LED_Task", 45, NULL, 1, NULL);
+  xTaskCreate(BUZTask, "BUZ_Task", 45, NULL, 1, NULL);
   xTaskCreate(MainTask, "Main_Task", 128, NULL, 1, NULL);
   xTaskCreate(DebugTask, "Debug_Task", 128, NULL, 1, NULL);
 
   // Suspendable Tasks
-  xTaskCreate(TxTask, "Tx_Task", 85, NULL, 1, &txTaskHandle);
-  xTaskCreate(RxTask, "Rx_Task", 85, NULL, 1, &rxTaskHandle);
-  vTaskSuspend(txTaskHandle);
-  vTaskSuspend(rxTaskHandle);
+  xTaskCreate(CommsTask, "Comms_Task", 100, NULL, 1, &commsTaskHandle);
+  vTaskSuspend(commsTaskHandle);
 }
 
 void DebugTask(void *pvParameters) {
@@ -68,7 +65,7 @@ void BUZTask(void *pvParameters) {
   }
 }
 
-void TxTask(void *pvParameters) {
+void CommsTask(void *pvParameters) {
   for (;;) {
     if (btn4.isPressed()) {
       buzFlag = 1;
@@ -81,12 +78,6 @@ void TxTask(void *pvParameters) {
   }
 }
 
-void RxTask(void *pvParameters) {
-  for(;;) {
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-}
-
 void MainTask(void *pvParameters) {
   for(;;) {
     switch (currentState) {
@@ -94,8 +85,7 @@ void MainTask(void *pvParameters) {
         if (btn1.isPressed()) {
           currentState = STATE_NORMAL;
           
-          vTaskResume(txTaskHandle);
-          vTaskResume(rxTaskHandle);
+          vTaskResume(commsTaskHandle);
         }
       break;
 
@@ -103,8 +93,7 @@ void MainTask(void *pvParameters) {
         if (btn2.isPressed()) {
           currentState = STATE_IDLE;
           
-          vTaskSuspend(txTaskHandle);
-          vTaskSuspend(rxTaskHandle);
+          vTaskSuspend(commsTaskHandle);
           
           ledFlag = 0;
           buzFlag = 0;
