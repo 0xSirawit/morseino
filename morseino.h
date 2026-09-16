@@ -2,17 +2,17 @@
 #define MORSEINO_H
 
 #include <Arduino.h>
-#include <Arduino_FreeRTOS.h>
 #include <Wire.h>
 #include "debounce_button.h"
+#include "morse_utils.h"
 
-#define PIN_BT4 2
-#define PIN_BT1 5
-#define PIN_BT2 6 
-#define PIN_BT3 7 
-#define PIN_LED 8
-#define PIN_P1 14 
-#define PIN_P2 15
+#define PIN_BT4 19
+#define PIN_BT1 18
+#define PIN_BT2 13
+#define PIN_BT3 14 
+#define PIN_LED 17
+#define PIN_P1 34
+#define PIN_P2 35
 #define PIN_BUZ 16
 
 #define BUZTONE 1000

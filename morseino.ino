@@ -12,7 +12,7 @@ DebouncedButton btn3(PIN_BT3, BUTTON_PRESSED);
 DebouncedButton btn4(PIN_BT4, BUTTON_PRESSED);
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   btn1.begin();
   btn2.begin();
@@ -25,20 +25,20 @@ void setup() {
   pinMode(PIN_BUZ, OUTPUT);
   
   // Core Tasks
-  xTaskCreate(LEDTask, "LED_Task", 45, NULL, 1, NULL);
-  xTaskCreate(BUZTask, "BUZ_Task", 45, NULL, 1, NULL);
-  xTaskCreate(MainTask, "Main_Task", 128, NULL, 1, NULL);
-  xTaskCreate(DebugTask, "Debug_Task", 128, NULL, 1, NULL);
+  xTaskCreate(LEDTask, "LED_Task", 2048, NULL, 1, NULL);
+  xTaskCreate(BUZTask, "BUZ_Task", 2048, NULL, 1, NULL);
+  xTaskCreate(MainTask, "Main_Task", 2048, NULL, 1, NULL);
+  xTaskCreate(DebugTask, "Debug_Task", 2048, NULL, 1, NULL);
 
   // Suspendable Tasks
-  xTaskCreate(CommsTask, "Comms_Task", 100, NULL, 1, &commsTaskHandle);
+  xTaskCreate(CommsTask, "Comms_Task", 4096, NULL, 1, &commsTaskHandle);
   vTaskSuspend(commsTaskHandle);
 }
 
 void DebugTask(void *pvParameters) {
   for (;;) {
-    Serial.print("State: ");
-    Serial.println(currentState);
+    // Serial.print("State: ");
+    // Serial.println(currentState);
     vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
@@ -66,11 +66,46 @@ void BUZTask(void *pvParameters) {
 }
 
 void CommsTask(void *pvParameters) {
+  TickType_t pressStartTick = 0;
+  TickType_t releaseStartTick = 0;
+  float unitTime = 100.0;
+  String seqBuffer = "";
+
   for (;;) {
     if (btn4.isPressed()) {
       buzFlag = 1;
       ledFlag = 1;
+      pressStartTick = xTaskGetTickCount();
+
+      while (btn4.isPressed()) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+      }
+
+      buzFlag = false;
+      ledFlag = false;
+      releaseStartTick = xTaskGetTickCount();
+
+      unsigned long duration = (releaseStartTick - pressStartTick) * portTICK_PERIOD_MS;
+
+      char symbol = (duration < (unsigned long)(unitTime * 2.0)) ? '.' : '-';
+
+      seqBuffer = seqBuffer + symbol;
+
+      if (symbol == '.') {
+        Serial.print(".");
+        unitTime = (unitTime * 3.0 + (float)duration) / 4.0;
+      } else {
+        Serial.print("-");
+        unitTime = (unitTime * 3.0 + ((float)duration / 3.0)) / 4.0;
+      }
     } else {
+      if (seqBuffer.length() > 0) {
+        if (((xTaskGetTickCount() - releaseStartTick) * portTICK_PERIOD_MS) > (unitTime * 2.5)) {
+          Serial.print(" -> ");
+          Serial.println(morseDecode(seqBuffer));
+          seqBuffer = "";
+        }
+      }
       buzFlag = 0;
       ledFlag = 0;
     }
