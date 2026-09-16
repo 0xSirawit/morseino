@@ -4,6 +4,9 @@ volatile SystemState currentState = STATE_IDLE;
 volatile bool ledFlag = false;
 volatile bool buzFlag = false;
 
+String globalSeqBuffer = "";
+SemaphoreHandle_t seqBufferMutex = NULL;
+
 TaskHandle_t commsTaskHandle = NULL;
 
 DebouncedButton btn1(PIN_BT1, BUTTON_PRESSED);
@@ -11,8 +14,11 @@ DebouncedButton btn2(PIN_BT2, BUTTON_PRESSED);
 DebouncedButton btn3(PIN_BT3, BUTTON_PRESSED);
 DebouncedButton btn4(PIN_BT4, BUTTON_PRESSED);
 
+  
 void setup() {
   Serial.begin(115200);
+
+  seqBufferMutex = xSemaphoreCreateMutex();
 
   btn1.begin();
   btn2.begin();
@@ -22,11 +28,12 @@ void setup() {
   pinMode(PIN_P1, INPUT);
   pinMode(PIN_P2, INPUT);
   pinMode(PIN_LED, OUTPUT);
-  pinMode(PIN_BUZ, OUTPUT);
+  pinMode(PIN_BUZ, OUTPUT);     
   
   // Core Tasks
   xTaskCreate(LEDTask, "LED_Task", 2048, NULL, 1, NULL);
   xTaskCreate(BUZTask, "BUZ_Task", 2048, NULL, 1, NULL);
+  xTaskCreate(LCDDisplayTask, "LCDDisplay_Task", 2048, NULL, 1, NULL);
   xTaskCreate(MainTask, "Main_Task", 2048, NULL, 1, NULL);
   xTaskCreate(DebugTask, "Debug_Task", 2048, NULL, 1, NULL);
 
@@ -55,13 +62,95 @@ void LEDTask(void *pvParameters) {
 }
 
 void BUZTask(void *pvParameters) {
+  bool lastBuzState = false;
+
   for (;;) {
-    if (buzFlag) {
+    if (buzFlag && !lastBuzState) {
       tone(PIN_BUZ, BUZTONE);
-    } else {
+      lastBuzState = true;
+    } 
+
+    else if (!buzFlag && lastBuzState) {
       noTone(PIN_BUZ);
+      lastBuzState = false;
     }
+
     vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+void LCDDisplayTask(void *pvParameters) {
+  TickType_t blinkTime = xTaskGetTickCount();
+  bool blinkState = 0;
+  String displayBuffer = "";
+
+  SystemState lastState = (SystemState)-1; 
+
+  LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+  lcd.init();
+  lcd.backlight();  
+
+  lcd.createChar(0, SPEAKER);
+  lcd.createChar(1, MUTESPEAKER);
+  lcd.createChar(2, LOCK);
+  lcd.createChar(3, UNLOCK);
+
+  for (;;) {
+    if (currentState != lastState) {
+      lcd.clear();
+      lastState = currentState;
+    }
+
+    switch (currentState) {
+      case STATE_IDLE:
+        lcd.setCursor(0,0);
+        lcd.print("MORSEINO");
+      break;
+
+      case STATE_NORMAL:
+        lcd.setCursor(10, 0);
+        lcd.write(byte(3));
+        lcd.print("00");
+
+        lcd.setCursor(14, 0);
+        lcd.write(byte(0));
+
+        if ((xTaskGetTickCount() - blinkTime) >= pdMS_TO_TICKS(500)) {
+          blinkState ^= 1;
+          blinkTime = xTaskGetTickCount();
+          lcd.setCursor(0, 0);
+          if (blinkState) {
+            lcd.print(">");
+          } else {
+            lcd.print(" ");
+          }
+        }
+
+        if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          displayBuffer = globalSeqBuffer;
+          xSemaphoreGive(seqBufferMutex);
+        }
+
+
+        if (displayBuffer.length() > 5) {
+          displayBuffer = displayBuffer.substring(0, 5);
+        }
+
+        lcd.setCursor(1, 0);
+        lcd.print("     ");
+        lcd.setCursor(1, 0);
+        lcd.print(displayBuffer);
+
+      break;
+
+      case STATE_PRACTICE:
+      case STATE_LOG:
+      case STATE_SETTING:
+      break;
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
@@ -69,7 +158,7 @@ void CommsTask(void *pvParameters) {
   TickType_t pressStartTick = 0;
   TickType_t releaseStartTick = 0;
   float unitTime = 100.0;
-  String seqBuffer = "";
+  String localSeqBuffer = "";
 
   for (;;) {
     if (btn4.isPressed()) {
@@ -86,10 +175,14 @@ void CommsTask(void *pvParameters) {
       releaseStartTick = xTaskGetTickCount();
 
       unsigned long duration = (releaseStartTick - pressStartTick) * portTICK_PERIOD_MS;
-
       char symbol = (duration < (unsigned long)(unitTime * 2.0)) ? '.' : '-';
 
-      seqBuffer = seqBuffer + symbol;
+      localSeqBuffer = localSeqBuffer + symbol;
+
+      if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        globalSeqBuffer = localSeqBuffer;
+        xSemaphoreGive(seqBufferMutex);
+      }
 
       if (symbol == '.') {
         Serial.print(".");
@@ -98,12 +191,19 @@ void CommsTask(void *pvParameters) {
         Serial.print("-");
         unitTime = (unitTime * 3.0 + ((float)duration / 3.0)) / 4.0;
       }
+
     } else {
-      if (seqBuffer.length() > 0) {
+      if (localSeqBuffer.length() > 0) {
         if (((xTaskGetTickCount() - releaseStartTick) * portTICK_PERIOD_MS) > (unitTime * 2.5)) {
           Serial.print(" -> ");
-          Serial.println(morseDecode(seqBuffer));
-          seqBuffer = "";
+          Serial.println(morseDecode(localSeqBuffer));
+          
+          localSeqBuffer = "";
+          
+          if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            globalSeqBuffer = "";
+            xSemaphoreGive(seqBufferMutex);
+          }
         }
       }
       buzFlag = 0;

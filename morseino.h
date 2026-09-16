@@ -2,6 +2,7 @@
 #define MORSEINO_H
 
 #include <Arduino.h>
+#include <LiquidCrystal_I2C.h>
 #include <Wire.h>
 #include "debounce_button.h"
 #include "morse_utils.h"
@@ -31,8 +32,13 @@ enum SystemState {
 extern volatile SystemState currentState;
 extern volatile bool ledFlag;
 extern volatile bool buzFlag;
-
 extern TaskHandle_t commsTaskHandle;
+
+// TODO: MUTESPEAKER ICON
+byte SPEAKER[] = {B00001, B00011, B01111, B01111, B01111, B00011, B00001, B00000};
+byte MUTESPEAKER[] = {B00001, B00011, B01111, B01111, B01111, B00011, B00001, B00000};
+byte LOCK[] = {B01110, B10001, B10001, B11111, B11011, B11011, B11111, B00000};
+byte UNLOCK[] = {B01110, B10000, B10000, B11111, B11011, B11011, B11111, B00000};
 
 void DebugTask(void *pvParameters);
 void LEDTask(void *pvParameters);
