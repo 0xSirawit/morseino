@@ -6,6 +6,7 @@ volatile bool buzFlag = false;
 
 String globalSeqBuffer = "";
 SemaphoreHandle_t seqBufferMutex = NULL;
+SemaphoreHandle_t i2cMutex = NULL;
 
 TaskHandle_t commsTaskHandle = NULL;
 
@@ -14,11 +15,16 @@ DebouncedButton btn2(PIN_BT2, BUTTON_PRESSED);
 DebouncedButton btn3(PIN_BT3, BUTTON_PRESSED);
 DebouncedButton btn4(PIN_BT4, BUTTON_PRESSED);
 
-  
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
 void setup() {
   Serial.begin(115200);
 
   seqBufferMutex = xSemaphoreCreateMutex();
+  i2cMutex = xSemaphoreCreateMutex();
+
+  Wire.begin();
+  u8g2.begin();
 
   btn1.begin();
   btn2.begin();
@@ -34,11 +40,12 @@ void setup() {
   xTaskCreate(LEDTask, "LED_Task", 2048, NULL, 1, NULL);
   xTaskCreate(BUZTask, "BUZ_Task", 2048, NULL, 1, NULL);
   xTaskCreate(LCDDisplayTask, "LCDDisplay_Task", 2048, NULL, 1, NULL);
+  xTaskCreate(OLEDDisplayTask, "OLEDDisplay_Task", 8192, NULL, 1, NULL);
   xTaskCreate(MainTask, "Main_Task", 2048, NULL, 1, NULL);
   xTaskCreate(DebugTask, "Debug_Task", 2048, NULL, 1, NULL);
 
   // Suspendable Tasks
-  xTaskCreate(CommsTask, "Comms_Task", 4096, NULL, 1, &commsTaskHandle);
+  xTaskCreate(CommsTask, "Comms_Task", 2048, NULL, 1, &commsTaskHandle);
   vTaskSuspend(commsTaskHandle);
 }
 
@@ -79,6 +86,30 @@ void BUZTask(void *pvParameters) {
   }
 }
 
+void OLEDDisplayTask(void *pvParameters) {
+  int p1_value = 0;
+  char textBuffer[16];
+
+  for (;;) {
+    p1_value = analogRead(PIN_P1);
+    
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      u8g2.clearBuffer();                  
+      u8g2.setFont(u8g2_font_ncenB08_tr); 
+      
+      u8g2.drawStr(0, 10, "Hello World!");
+      
+      sprintf(textBuffer, "P1: %d", p1_value);
+      u8g2.drawStr(0, 25, textBuffer);
+      
+      u8g2.sendBuffer();                   
+
+      xSemaphoreGive(i2cMutex);
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
 void LCDDisplayTask(void *pvParameters) {
   TickType_t blinkTime = xTaskGetTickCount();
   bool blinkState = 0;
@@ -88,6 +119,8 @@ void LCDDisplayTask(void *pvParameters) {
 
   LiquidCrystal_I2C lcd(0x27, 16, 2);
 
+  xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50));
+
   lcd.init();
   lcd.backlight();  
 
@@ -96,60 +129,61 @@ void LCDDisplayTask(void *pvParameters) {
   lcd.createChar(2, LOCK);
   lcd.createChar(3, UNLOCK);
 
+  xSemaphoreGive(i2cMutex);
+
   for (;;) {
-    if (currentState != lastState) {
-      lcd.clear();
-      lastState = currentState;
-    }
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      
+      if (currentState != lastState) {
+        lcd.clear();
+        lastState = currentState;
+      }
 
-    switch (currentState) {
-      case STATE_IDLE:
-        lcd.setCursor(0,0);
-        lcd.print("MORSEINO");
-      break;
-
-      case STATE_NORMAL:
-        lcd.setCursor(10, 0);
-        lcd.write(byte(3));
-        lcd.print("00");
-
-        lcd.setCursor(14, 0);
-        lcd.write(byte(0));
-
-        if ((xTaskGetTickCount() - blinkTime) >= pdMS_TO_TICKS(500)) {
-          blinkState ^= 1;
-          blinkTime = xTaskGetTickCount();
+      switch (currentState) {
+        case STATE_IDLE:
           lcd.setCursor(0, 0);
-          if (blinkState) {
-            lcd.print(">");
-          } else {
-            lcd.print(" ");
+          lcd.print("MORSEINO");
+          break;
+
+        case STATE_NORMAL:
+          lcd.setCursor(10, 0);
+          lcd.write(byte(3));
+          lcd.print("00");
+
+          lcd.setCursor(14, 0);
+          lcd.write(byte(0));
+
+          if ((xTaskGetTickCount() - blinkTime) >= pdMS_TO_TICKS(500)) {
+            blinkState ^= 1;
+            blinkTime = xTaskGetTickCount();
+            lcd.setCursor(0, 0);
+            lcd.print(blinkState ? ">" : " ");
           }
-        }
 
-        if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-          displayBuffer = globalSeqBuffer;
-          xSemaphoreGive(seqBufferMutex);
-        }
+          if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            displayBuffer = globalSeqBuffer;
+            xSemaphoreGive(seqBufferMutex);
+          }
 
+          if (displayBuffer.length() > 5) {
+            displayBuffer = displayBuffer.substring(0, 5);
+          }
 
-        if (displayBuffer.length() > 5) {
-          displayBuffer = displayBuffer.substring(0, 5);
-        }
+          lcd.setCursor(1, 0);
+          lcd.print("     ");
+          lcd.setCursor(1, 0);
+          lcd.print(displayBuffer);
+          break;
 
-        lcd.setCursor(1, 0);
-        lcd.print("     ");
-        lcd.setCursor(1, 0);
-        lcd.print(displayBuffer);
+        case STATE_PRACTICE:
+        case STATE_LOG:
+        case STATE_SETTING:
+          break;
+      }
 
-      break;
-
-      case STATE_PRACTICE:
-      case STATE_LOG:
-      case STATE_SETTING:
-      break;
+      xSemaphoreGive(i2cMutex);
     }
-    
+
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }

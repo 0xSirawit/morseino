@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <LiquidCrystal_I2C.h>
+#include <U8g2lib.h>
 #include <Wire.h>
 #include "debounce_button.h"
 #include "morse_utils.h"
