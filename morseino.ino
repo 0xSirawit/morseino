@@ -159,7 +159,7 @@ void LCDDisplayTask(void *pvParameters) {
 
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             displayBuffer = globalSeqBuffer;
-            messageDisplay = globalMessageBuffer;  // อ่านพร้อมกันในล็อกเดียวกัน
+            messageDisplay = globalMessageBuffer;
             xSemaphoreGive(seqBufferMutex);
           }
 
@@ -168,7 +168,7 @@ void LCDDisplayTask(void *pvParameters) {
           }
 
           if (messageDisplay.length() > 16) {
-            messageDisplay = messageDisplay.substring(messageDisplay.length() - 16);  // ตัดเอา 16 ตัวท้าย
+            messageDisplay = messageDisplay.substring(messageDisplay.length() - 16);
           }
 
           if (displayBuffer != lastDisplayBuffer) {
