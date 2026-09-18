@@ -5,6 +5,7 @@ volatile bool ledFlag = false;
 volatile bool buzFlag = false;
 
 String globalSeqBuffer = "";
+String globalMessageBuffer = "";
 SemaphoreHandle_t seqBufferMutex = NULL;
 SemaphoreHandle_t i2cMutex = NULL;
 
@@ -15,7 +16,7 @@ DebouncedButton btn2(PIN_BT2, BUTTON_PRESSED);
 DebouncedButton btn3(PIN_BT3, BUTTON_PRESSED);
 DebouncedButton btn4(PIN_BT4, BUTTON_PRESSED);
 
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 
 void setup() {
   Serial.begin(115200);
@@ -34,8 +35,8 @@ void setup() {
   pinMode(PIN_P1, INPUT);
   pinMode(PIN_P2, INPUT);
   pinMode(PIN_LED, OUTPUT);
-  pinMode(PIN_BUZ, OUTPUT);     
-  
+  pinMode(PIN_BUZ, OUTPUT);
+
   // Core Tasks
   xTaskCreate(LEDTask, "LED_Task", 2048, NULL, 1, NULL);
   xTaskCreate(BUZTask, "BUZ_Task", 2048, NULL, 1, NULL);
@@ -75,7 +76,7 @@ void BUZTask(void *pvParameters) {
     if (buzFlag && !lastBuzState) {
       tone(PIN_BUZ, BUZTONE);
       lastBuzState = true;
-    } 
+    }
 
     else if (!buzFlag && lastBuzState) {
       noTone(PIN_BUZ);
@@ -92,17 +93,17 @@ void OLEDDisplayTask(void *pvParameters) {
 
   for (;;) {
     p1_value = analogRead(PIN_P1);
-    
+
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-      u8g2.clearBuffer();                  
-      u8g2.setFont(u8g2_font_ncenB08_tr); 
-      
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_ncenB08_tr);
+
       u8g2.drawStr(0, 10, "Hello World!");
-      
+
       sprintf(textBuffer, "P1: %d", p1_value);
       u8g2.drawStr(0, 25, textBuffer);
-      
-      u8g2.sendBuffer();                   
+
+      u8g2.sendBuffer();
 
       xSemaphoreGive(i2cMutex);
     }
@@ -114,15 +115,18 @@ void LCDDisplayTask(void *pvParameters) {
   TickType_t blinkTime = xTaskGetTickCount();
   bool blinkState = 0;
   String displayBuffer = "";
+  String messageDisplay = "";
+  String lastDisplayBuffer = "";
+  String lastMessageDisplay = "";
 
-  SystemState lastState = (SystemState)-1; 
+  SystemState lastState = (SystemState)-1;
 
   LiquidCrystal_I2C lcd(0x27, 16, 2);
 
   xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50));
 
   lcd.init();
-  lcd.backlight();  
+  lcd.backlight();
 
   lcd.createChar(0, SPEAKER);
   lcd.createChar(1, MUTESPEAKER);
@@ -133,7 +137,7 @@ void LCDDisplayTask(void *pvParameters) {
 
   for (;;) {
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-      
+
       if (currentState != lastState) {
         lcd.clear();
         lastState = currentState;
@@ -153,15 +157,9 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.setCursor(14, 0);
           lcd.write(byte(0));
 
-          if ((xTaskGetTickCount() - blinkTime) >= pdMS_TO_TICKS(500)) {
-            blinkState ^= 1;
-            blinkTime = xTaskGetTickCount();
-            lcd.setCursor(0, 0);
-            lcd.print(blinkState ? ">" : " ");
-          }
-
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             displayBuffer = globalSeqBuffer;
+            messageDisplay = globalMessageBuffer;  // อ่านพร้อมกันในล็อกเดียวกัน
             xSemaphoreGive(seqBufferMutex);
           }
 
@@ -169,11 +167,25 @@ void LCDDisplayTask(void *pvParameters) {
             displayBuffer = displayBuffer.substring(0, 5);
           }
 
-          lcd.setCursor(1, 0);
-          lcd.print("     ");
-          lcd.setCursor(1, 0);
-          lcd.print(displayBuffer);
-          break;
+          if (messageDisplay.length() > 16) {
+            messageDisplay = messageDisplay.substring(messageDisplay.length() - 16);  // ตัดเอา 16 ตัวท้าย
+          }
+
+          if (displayBuffer != lastDisplayBuffer) {
+            lcd.setCursor(1, 0);
+            lcd.print("     ");
+            lcd.setCursor(1, 0);
+            lcd.print(displayBuffer);
+            lastDisplayBuffer = displayBuffer;
+          }
+
+          if (messageDisplay != lastMessageDisplay) {
+            lcd.setCursor(0, 1);
+            lcd.print("                ");
+            lcd.setCursor(0, 1);
+            lcd.print(messageDisplay);
+            lastMessageDisplay = messageDisplay;
+          }
 
         case STATE_PRACTICE:
         case STATE_LOG:
@@ -229,13 +241,16 @@ void CommsTask(void *pvParameters) {
     } else {
       if (localSeqBuffer.length() > 0) {
         if (((xTaskGetTickCount() - releaseStartTick) * portTICK_PERIOD_MS) > (unitTime * 2.5)) {
+          char decodedChar = morseDecode(localSeqBuffer);
+
           Serial.print(" -> ");
-          Serial.println(morseDecode(localSeqBuffer));
-          
+          Serial.println(decodedChar);
+
           localSeqBuffer = "";
-          
+
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             globalSeqBuffer = "";
+            globalMessageBuffer = globalMessageBuffer + decodedChar;
             xSemaphoreGive(seqBufferMutex);
           }
         }
@@ -248,36 +263,62 @@ void CommsTask(void *pvParameters) {
 }
 
 void MainTask(void *pvParameters) {
-  for(;;) {
-    switch (currentState) {
-      case STATE_IDLE:
-        if (btn1.isPressed()) {
-          currentState = STATE_NORMAL;
-          
-          vTaskResume(commsTaskHandle);
-        }
-      break;
-
-      case STATE_NORMAL:
-        if (btn2.isPressed()) {
-          currentState = STATE_IDLE;
-          
-          vTaskSuspend(commsTaskHandle);
-          
-          ledFlag = 0;
-          buzFlag = 0;
-        }
-      break;
-
-      case STATE_PRACTICE:
-      break;
-
-      case STATE_LOG:
-      break;
-
-      case STATE_SETTING:
-      break;
+  bool btn1PrevPressed = false;
+  bool btn2PrevPressed = false;
+  for (;;) {
+    bool btn1NowPressed = btn1.isPressed();
+    bool btn2NowPressed = btn2.isPressed();
+    if (btn1NowPressed && !btn1PrevPressed) {
+      if (currentState == STATE_IDLE) {
+        currentState = STATE_NORMAL;
+        vTaskResume(commsTaskHandle);
+      } else if (currentState == STATE_NORMAL) {
+        currentState = STATE_IDLE;
+        vTaskSuspend(commsTaskHandle);
+        ledFlag = 0;
+        buzFlag = 0;
+      }
     }
+
+    btn1PrevPressed = btn1NowPressed;
+    if (btn2NowPressed && !btn2PrevPressed && currentState == STATE_NORMAL) {
+      if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        if (globalMessageBuffer.length() > 0) {
+          globalMessageBuffer = globalMessageBuffer.substring(0, globalMessageBuffer.length() - 1);
+        }
+        xSemaphoreGive(seqBufferMutex);
+      }
+    }
+    btn2PrevPressed = btn2NowPressed;
+    // switch (currentState) {
+    //   case STATE_IDLE:
+    //     if (btn1.isPressed()) {
+    //       currentState = STATE_NORMAL;
+
+    //       vTaskResume(commsTaskHandle);
+    //     }
+    //   break;
+
+    //   case STATE_NORMAL:
+    //     if (btn1.isPressed()) {
+    //       currentState = STATE_IDLE;
+
+    //       vTaskSuspend(commsTaskHandle);
+
+    //       ledFlag = 0;
+    //       buzFlag = 0;
+    //     }ี
+    //   break;
+
+    //   case STATE_PRACTICE:
+    //   break;
+
+    //   case STATE_LOG:
+    //   break;
+
+    //   case STATE_SETTING:
+    //   break;
+    // }
 
     vTaskDelay(pdMS_TO_TICKS(10));
   }
