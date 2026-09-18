@@ -280,47 +280,36 @@ void MainTask(void *pvParameters) {
   for (;;) {
     bool btn1NowPressed = btn1.isPressed();
     bool btn2NowPressed = btn2.isPressed();
-    if (btn1NowPressed && !btn1PrevPressed) {
-      if (currentState == STATE_IDLE) {
-        currentState = STATE_NORMAL;
-        vTaskResume(commsTaskHandle);
-      } else if (currentState == STATE_NORMAL) {
-        currentState = STATE_IDLE;
-        vTaskSuspend(commsTaskHandle);
-        ledFlag = 0;
-        buzFlag = 0;
-      }
+
+    switch (currentState) {
+      case STATE_IDLE:
+        if (btn1.isPressed()) {
+          currentState = STATE_NORMAL;
+
+          vTaskResume(commsTaskHandle);
+        }
+      break;
+
+      case STATE_NORMAL:
+        if (btn2.isPressed()) {
+          currentState = STATE_IDLE;
+
+          vTaskSuspend(commsTaskHandle);
+
+          ledFlag = 0;
+          buzFlag = 0;
+        }
+      break;
+
+      case STATE_PRACTICE:
+      break;
+
+      case STATE_LOG:
+      break;
+
+      case STATE_SETTING:
+      break;
     }
-    btn1PrevPressed = btn1NowPressed;
-    // switch (currentState) {
-    //   case STATE_IDLE:
-    //     if (btn1.isPressed()) {
-    //       currentState = STATE_NORMAL;
-
-    //       vTaskResume(commsTaskHandle);
-    //     }
-    //   break;
-
-    //   case STATE_NORMAL:
-    //     if (btn1.isPressed()) {
-    //       currentState = STATE_IDLE;
-
-    //       vTaskSuspend(commsTaskHandle);
-
-    //       ledFlag = 0;
-    //       buzFlag = 0;
-    //     }ี
-    //   break;
-
-    //   case STATE_PRACTICE:
-    //   break;
-
-    //   case STATE_LOG:
-    //   break;
-
-    //   case STATE_SETTING:
-    //   break;
-    // }
 
     vTaskDelay(pdMS_TO_TICKS(10));
   }
