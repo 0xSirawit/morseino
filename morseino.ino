@@ -279,17 +279,7 @@ void MainTask(void *pvParameters) {
         buzFlag = 0;
       }
     }
-
     btn1PrevPressed = btn1NowPressed;
-    if (btn2NowPressed && !btn2PrevPressed && currentState == STATE_NORMAL) {
-      if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        if (globalMessageBuffer.length() > 0) {
-          globalMessageBuffer = globalMessageBuffer.substring(0, globalMessageBuffer.length() - 1);
-        }
-        xSemaphoreGive(seqBufferMutex);
-      }
-    }
-    btn2PrevPressed = btn2NowPressed;
     // switch (currentState) {
     //   case STATE_IDLE:
     //     if (btn1.isPressed()) {
