@@ -177,7 +177,7 @@ void LCDDisplayTask(void *pvParameters) {
 
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             displayBuffer = globalSeqBuffer;
-            messageDisplay = globalMessageBuffer;  // อ่านพร้อมกันในล็อกเดียวกัน
+            messageDisplay = globalMessageBuffer;
             xSemaphoreGive(seqBufferMutex);
           }
 
@@ -186,7 +186,7 @@ void LCDDisplayTask(void *pvParameters) {
           }
 
           if (messageDisplay.length() > 16) {
-            messageDisplay = messageDisplay.substring(messageDisplay.length() - 16);  // ตัดเอา 16 ตัวท้าย
+            messageDisplay = messageDisplay.substring(messageDisplay.length() - 16);
           }
 
           if (displayBuffer != lastDisplayBuffer) {
@@ -298,17 +298,7 @@ void MainTask(void *pvParameters) {
         buzFlag = 0;
       }
     }
-
     btn1PrevPressed = btn1NowPressed;
-    if (btn2NowPressed && !btn2PrevPressed && currentState == STATE_NORMAL) {
-      if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        if (globalMessageBuffer.length() > 0) {
-          globalMessageBuffer = globalMessageBuffer.substring(0, globalMessageBuffer.length() - 1);
-        }
-        xSemaphoreGive(seqBufferMutex);
-      }
-    }
-    btn2PrevPressed = btn2NowPressed;
     // switch (currentState) {
     //   case STATE_IDLE:
     //     if (btn1.isPressed()) {
