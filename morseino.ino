@@ -3,6 +3,7 @@
 volatile SystemState currentState = STATE_IDLE;
 volatile bool ledFlag = false;
 volatile bool buzFlag = false;
+volatile uint8_t caesarKey = 0;
 
 String globalSeqBuffer = "";
 SemaphoreHandle_t seqBufferMutex = NULL;
@@ -147,8 +148,18 @@ void LCDDisplayTask(void *pvParameters) {
 
         case STATE_NORMAL:
           lcd.setCursor(10, 0);
-          lcd.write(byte(3));
-          lcd.print("00");
+          if (caesarKey == 0) {
+            lcd.write(byte(3));
+          } else {
+            lcd.write(byte(2));
+          }
+          
+
+          if (caesarKey < 10) {
+            lcd.print(0);
+          }
+
+          lcd.print(caesarKey);
 
           lcd.setCursor(14, 0);
           lcd.write(byte(0));
@@ -195,6 +206,7 @@ void CommsTask(void *pvParameters) {
   String localSeqBuffer = "";
 
   for (;;) {
+    caesarKey = map(analogRead(PIN_P1), 0, 4095, 0, 35);
     if (btn4.isPressed()) {
       buzFlag = 1;
       ledFlag = 1;

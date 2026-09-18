@@ -33,6 +33,8 @@ enum SystemState {
 extern volatile SystemState currentState;
 extern volatile bool ledFlag;
 extern volatile bool buzFlag;
+extern volatile uint8_t caesarKey;
+
 extern TaskHandle_t commsTaskHandle;
 
 // TODO: MUTESPEAKER ICON
