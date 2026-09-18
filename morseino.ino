@@ -35,6 +35,7 @@ void setup() {
 
   pinMode(PIN_P1, INPUT);
   pinMode(PIN_P2, INPUT);
+  pinMode(PIN_SW1, INPUT);
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_BUZ, OUTPUT);
 
@@ -53,8 +54,6 @@ void setup() {
 
 void DebugTask(void *pvParameters) {
   for (;;) {
-    // Serial.print("State: ");
-    // Serial.println(currentState);
     vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
@@ -74,7 +73,7 @@ void BUZTask(void *pvParameters) {
   bool lastBuzState = false;
 
   for (;;) {
-    if (buzFlag && !lastBuzState) {
+    if (buzFlag && !lastBuzState && digitalRead(PIN_SW1)) {
       tone(PIN_BUZ, BUZTONE);
       lastBuzState = true;
     }
@@ -131,6 +130,7 @@ void LCDDisplayTask(void *pvParameters) {
 
   lcd.createChar(0, SPEAKER);
   lcd.createChar(1, MUTESPEAKER);
+  lcd.createChar(4, UNMUTESPEAKER);
   lcd.createChar(2, LOCK);
   lcd.createChar(3, UNLOCK);
 
@@ -167,6 +167,14 @@ void LCDDisplayTask(void *pvParameters) {
 
           lcd.setCursor(14, 0);
           lcd.write(byte(0));
+
+          lcd.setCursor(15, 0);
+          if (digitalRead(PIN_SW1)){
+            lcd.write(byte(4));
+            
+          }else {
+            lcd.write(byte(1));
+          }
 
           if ((xTaskGetTickCount() - blinkTime) >= pdMS_TO_TICKS(500)) {
             blinkState ^= 1;
