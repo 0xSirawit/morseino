@@ -168,6 +168,13 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.setCursor(14, 0);
           lcd.write(byte(0));
 
+          if ((xTaskGetTickCount() - blinkTime) >= pdMS_TO_TICKS(500)) {
+            blinkState ^= 1;
+            blinkTime = xTaskGetTickCount();
+            lcd.setCursor(0, 0);
+            lcd.print(blinkState ? ">" : " ");
+          }
+
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             displayBuffer = globalSeqBuffer;
             messageDisplay = globalMessageBuffer;
