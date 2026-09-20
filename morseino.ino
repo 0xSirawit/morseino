@@ -214,7 +214,10 @@ void LCDDisplayTask(void *pvParameters) {
       switch (currentState) {
         case STATE_IDLE:
           lcd.setCursor(0, 0);
-          lcd.print("MORSEINO");
+          lcd.print("--- MORSEINO ---");
+
+          lcd.setCursor(0, 1);
+          lcd.print("NAME: STATION101");
           break;
 
         case STATE_NORMAL:
@@ -228,7 +231,6 @@ void LCDDisplayTask(void *pvParameters) {
           if (caesarKey < 10) {
             lcd.print(0);
           }
-
           lcd.print(caesarKey);
 
           lcd.setCursor(14, 0);
@@ -277,7 +279,7 @@ void LCDDisplayTask(void *pvParameters) {
             lcd.print(messageDisplay);
             lastMessageDisplay = messageDisplay;
           }
-          break; // Added missing break statement
+          break;
 
         case STATE_PRACTICE:
         case STATE_LOG:
