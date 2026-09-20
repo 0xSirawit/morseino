@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <LiquidCrystal_I2C.h>
 #include <U8g2lib.h>
+#include <ESP32Encoder.h>
 #include <Wire.h>
 #include "debounce_button.h"
 #include "morse_utils.h"
@@ -14,8 +15,8 @@
 #define PIN_BT2 13
 #define PIN_BT3 14 
 #define PIN_LED 17
-#define PIN_P1 34
-#define PIN_P2 35
+#define PIN_RE_DT 34
+#define PIN_RE_CLK 35
 #define PIN_BUZ 16
 #define PIN_SW1 26
 
@@ -32,7 +33,9 @@ enum SystemState {
   STATE_SETTING,
 };
 
+extern const SystemState stateLookup[];
 extern volatile SystemState currentState;
+extern volatile SystemState selState;
 extern volatile bool ledFlag;
 extern volatile bool buzFlag;
 extern volatile uint8_t caesarKey;
@@ -54,6 +57,7 @@ void LEDTask(void *pvParameters);
 void BUZTask(void *pvParameters);
 void LCDDisplayTask(void *pvParameters);
 void OLEDDisplayTask(void *pvParameters);
+void RotaryEncoderTask(void *pvParameters);
 void CommsTask(void *pvParameters);
 void MainTask(void *pvParameters);
 

@@ -1,6 +1,7 @@
 #include "morseino.h"
 
 volatile SystemState currentState = STATE_IDLE;
+volatile SystemState selState = STATE_IDLE;
 volatile bool ledFlag = false;
 volatile bool buzFlag = false;
 volatile uint8_t caesarKey = 0;
@@ -30,8 +31,10 @@ volatile int item_selected = 1;
 volatile int item_sel_previous = 0;
 volatile int item_sel_next = 2;
 
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
+const SystemState stateLookup[] = {STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING};
 
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
+ESP32Encoder encoder;
 
 void setup() {
   Serial.begin(115200);
@@ -47,23 +50,65 @@ void setup() {
   btn3.begin();
   btn4.begin();
 
-  pinMode(PIN_P1, INPUT);
-  pinMode(PIN_P2, INPUT);
   pinMode(PIN_SW1, INPUT);
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_BUZ, OUTPUT);
+
+  encoder.attachHalfQuad(PIN_RE_DT, PIN_RE_CLK);
+  encoder.setCount(0);
 
   // Core Tasks
   xTaskCreate(LEDTask, "LED_Task", 2048, NULL, 1, NULL);
   xTaskCreate(BUZTask, "BUZ_Task", 2048, NULL, 1, NULL);
   xTaskCreate(LCDDisplayTask, "LCDDisplay_Task", 2048, NULL, 1, NULL);
   xTaskCreate(OLEDDisplayTask, "OLEDDisplay_Task", 8192, NULL, 1, NULL);
+  xTaskCreate(RotaryEncoderTask, "RotaryEncoder_Task", 2048, NULL, 1, NULL);
   xTaskCreate(MainTask, "Main_Task", 2048, NULL, 1, NULL);
   xTaskCreate(DebugTask, "Debug_Task", 2048, NULL, 1, NULL);
 
   // Suspendable Tasks
   xTaskCreate(CommsTask, "Comms_Task", 2048, NULL, 1, &commsTaskHandle);
   vTaskSuspend(commsTaskHandle);
+}
+
+void RotaryEncoderTask(void *pvParameters) {
+  long position;
+  for (;;) {
+    int64_t raw_position = encoder.getCount();
+    switch (currentState) {
+      case STATE_IDLE:
+        position = (long)(raw_position % 8);
+        if (position < 0) {
+          position += 8;
+        }
+
+        item_selected = position / 2;
+        item_sel_previous = (item_selected + 3) % 4;
+        item_sel_next     = (item_selected + 1) % 4;
+        selState = stateLookup[item_selected];
+      break;
+
+      case STATE_NORMAL:
+        position = (long)(raw_position % 72);
+        if (position < 0) {
+          position += 72;
+        }
+
+        caesarKey = position / 2;
+      break;
+
+      case STATE_PRACTICE:
+      break;
+
+      case STATE_LOG:
+      break;
+
+      case STATE_SETTING:
+      break;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
 }
 
 void DebugTask(void *pvParameters) {
@@ -91,7 +136,6 @@ void BUZTask(void *pvParameters) {
       tone(PIN_BUZ, BUZTONE);
       lastBuzState = true;
     }
-
     else if (!buzFlag && lastBuzState) {
       noTone(PIN_BUZ);
       lastBuzState = false;
@@ -103,10 +147,6 @@ void BUZTask(void *pvParameters) {
 
 void OLEDDisplayTask(void *pvParameters) {
   for (;;) {
-  item_selected = map(analogRead(PIN_P1), 0, 4096, 0, 4);
-  item_sel_previous = (item_selected + 3) % 4;
-  item_sel_next     = (item_selected + 1) % 4;
-
     u8g2.firstPage();
     do {
       if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -127,6 +167,8 @@ void OLEDDisplayTask(void *pvParameters) {
 
             u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
             u8g2.drawBox(125, 64/NUM_ITEMS * item_selected, 3, 64/NUM_ITEMS);
+            break;
+          default:
             break;
         }
         xSemaphoreGive(i2cMutex);
@@ -182,7 +224,6 @@ void LCDDisplayTask(void *pvParameters) {
           } else {
             lcd.write(byte(2));
           }
-          
 
           if (caesarKey < 10) {
             lcd.print(0);
@@ -196,8 +237,7 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.setCursor(15, 0);
           if (digitalRead(PIN_SW1)){
             lcd.write(byte(4));
-            
-          }else {
+          } else {
             lcd.write(byte(1));
           }
 
@@ -237,6 +277,7 @@ void LCDDisplayTask(void *pvParameters) {
             lcd.print(messageDisplay);
             lastMessageDisplay = messageDisplay;
           }
+          break; // Added missing break statement
 
         case STATE_PRACTICE:
         case STATE_LOG:
@@ -258,7 +299,6 @@ void CommsTask(void *pvParameters) {
   String localSeqBuffer = "";
 
   for (;;) {
-    caesarKey = map(analogRead(PIN_P1), 0, 4095, 0, 35);
     if (btn4.isPressed()) {
       buzFlag = 1;
       ledFlag = 1;
@@ -315,17 +355,15 @@ void CommsTask(void *pvParameters) {
 }
 
 void MainTask(void *pvParameters) {
-  bool btn1PrevPressed = false;
-  bool btn2PrevPressed = false;
-  for (;;) {
-    bool btn1NowPressed = btn1.isPressed();
-    bool btn2NowPressed = btn2.isPressed();
+  int saved_item_selected = 0;
 
+  for (;;) {
     switch (currentState) {
       case STATE_IDLE:
         if (btn1.isPressed()) {
-          currentState = STATE_NORMAL;
-
+          saved_item_selected = item_selected;
+          currentState = selState;
+          encoder.clearCount();
           vTaskResume(commsTaskHandle);
         }
       break;
@@ -333,27 +371,25 @@ void MainTask(void *pvParameters) {
       case STATE_NORMAL:
         if (btn2.isPressed()) {
           currentState = STATE_IDLE;
-
-          vTaskSuspend(commsTaskHandle);
-
+          encoder.setCount(saved_item_selected * 2);
           ledFlag = 0;
           buzFlag = 0;
+          vTaskSuspend(commsTaskHandle);
         }
       break;
 
       case STATE_PRACTICE:
-      break;
-
       case STATE_LOG:
-      break;
-
       case STATE_SETTING:
+        if (btn2.isPressed()) {
+          currentState = STATE_IDLE;
+          encoder.setCount(saved_item_selected * 2);
+        }
       break;
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
-
 void loop() {
 }
