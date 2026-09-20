@@ -12,12 +12,26 @@ SemaphoreHandle_t i2cMutex = NULL;
 
 TaskHandle_t commsTaskHandle = NULL;
 
+// Buttons
 DebouncedButton btn1(PIN_BT1, BUTTON_PRESSED);
 DebouncedButton btn2(PIN_BT2, BUTTON_PRESSED);
 DebouncedButton btn3(PIN_BT3, BUTTON_PRESSED);
 DebouncedButton btn4(PIN_BT4, BUTTON_PRESSED);
 
+// LCD_ICONS
+byte SPEAKER[] = {B00001, B00011, B01111, B01111, B01111, B00011, B00001, B00000};
+byte MUTESPEAKER[] = {B00000 ,B10001, B01010, B00100, B01010, B10001, B00000, B00000};
+byte UNMUTESPEAKER[] = {B00100, B00010, B10001, B01001, B10001, B00010, B00100, B00000};
+byte LOCK[] = {B01110, B10001, B10001, B11111, B11011, B11011, B11111, B00000};
+byte UNLOCK[] = {B01110, B10000, B10000, B11111, B11011, B11011, B11111, B00000};
+
+// OLED
+volatile int item_selected = 1;
+volatile int item_sel_previous = 0;
+volatile int item_sel_next = 2;
+
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
+
 
 void setup() {
   Serial.begin(115200);
@@ -88,25 +102,36 @@ void BUZTask(void *pvParameters) {
 }
 
 void OLEDDisplayTask(void *pvParameters) {
-  int p1_value = 0;
-  char textBuffer[16];
-
   for (;;) {
-    p1_value = analogRead(PIN_P1);
+  item_selected = map(analogRead(PIN_P1), 0, 4096, 0, 4);
+  item_sel_previous = (item_selected + 3) % 4;
+  item_sel_next     = (item_selected + 1) % 4;
 
-    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-      u8g2.clearBuffer();
-      u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.firstPage();
+    do {
+      if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        switch (currentState) {
+          case STATE_IDLE:
+            u8g2.drawBitmap(0, 22, 128/8, 21, bitmap_item_sel_outline);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(25, 15, menu_items[item_sel_previous]);
+            u8g2.drawBitmap(4, 2, 16/8, 16, bitmap_icons[item_sel_previous]);
 
-      u8g2.drawStr(0, 10, "Hello World!");
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(25, 15+20+2, menu_items[item_selected]);
+            u8g2.drawBitmap(4, 24, 16/8, 16, bitmap_icons[item_selected]);
 
-      sprintf(textBuffer, "P1: %d", p1_value);
-      u8g2.drawStr(0, 25, textBuffer);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(25, 15+20+20+2+2, menu_items[item_sel_next]);
+            u8g2.drawBitmap(4, 46, 16/8, 16, bitmap_icons[item_sel_next]);
 
-      u8g2.sendBuffer();
-
-      xSemaphoreGive(i2cMutex);
-    }
+            u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
+            u8g2.drawBox(125, 64/NUM_ITEMS * item_selected, 3, 64/NUM_ITEMS);
+            break;
+        }
+        xSemaphoreGive(i2cMutex);
+      }
+    } while (u8g2.nextPage());
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }

@@ -7,6 +7,7 @@
 #include <Wire.h>
 #include "debounce_button.h"
 #include "morse_utils.h"
+#include "oled_n_bitmaps.h"
 
 #define PIN_BT4 19
 #define PIN_BT1 18
@@ -36,18 +37,23 @@ extern volatile bool ledFlag;
 extern volatile bool buzFlag;
 extern volatile uint8_t caesarKey;
 
+extern volatile int item_selected;
+extern volatile int item_sel_previous;
+extern volatile int item_sel_next;
+
 extern TaskHandle_t commsTaskHandle;
 
-// TODO: MUTESPEAKER ICON
-byte SPEAKER[] = {B00001, B00011, B01111, B01111, B01111, B00011, B00001, B00000};
-byte MUTESPEAKER[] = {B00000 ,B10001, B01010, B00100, B01010, B10001, B00000, B00000};
-byte UNMUTESPEAKER[] = {B00100, B00010, B10001, B01001, B10001, B00010, B00100, B00000};
-byte LOCK[] = {B01110, B10001, B10001, B11111, B11011, B11011, B11111, B00000};
-byte UNLOCK[] = {B01110, B10000, B10000, B11111, B11011, B11011, B11111, B00000};
+extern byte SPEAKER[8];
+extern byte MUTESPEAKER[8];
+extern byte UNMUTESPEAKER[8];
+extern byte LOCK[8];
+extern byte UNLOCK[8];
 
 void DebugTask(void *pvParameters);
 void LEDTask(void *pvParameters);
 void BUZTask(void *pvParameters);
+void LCDDisplayTask(void *pvParameters);
+void OLEDDisplayTask(void *pvParameters);
 void CommsTask(void *pvParameters);
 void MainTask(void *pvParameters);
 
