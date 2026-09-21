@@ -31,6 +31,7 @@ enum SystemState {
   STATE_PRACTICE,
   STATE_LOG,
   STATE_SETTING,
+  STATE_HELP
 };
 
 extern const SystemState stateLookup[];

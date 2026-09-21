@@ -31,7 +31,9 @@ volatile int item_selected = 1;
 volatile int item_sel_previous = 0;
 volatile int item_sel_next = 2;
 
-const SystemState stateLookup[] = {STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING};
+volatile int help_line = 0;
+
+const SystemState stateLookup[] = {STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING, STATE_HELP};
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 ESP32Encoder encoder;
@@ -73,20 +75,22 @@ void setup() {
 
 void RotaryEncoderTask(void *pvParameters) {
   long position;
+  int NUM_OP = NUM_ITEMS*2;
+
   for (;;) {
     int64_t raw_position = encoder.getCount();
     switch (currentState) {
       case STATE_IDLE:
-        position = (long)(raw_position % 8);
+        position = (long)(raw_position % NUM_OP);
         if (position < 0) {
-          position += 8;
+          position += NUM_OP;
         }
 
         item_selected = position / 2;
-        item_sel_previous = (item_selected + 3) % 4;
-        item_sel_next     = (item_selected + 1) % 4;
+        item_sel_previous = (item_selected + (NUM_ITEMS - 1)) % NUM_ITEMS;
+        item_sel_next     = (item_selected + 1) % NUM_ITEMS;
         selState = stateLookup[item_selected];
-      break;
+        break;
 
       case STATE_NORMAL:
         position = (long)(raw_position % 72);
@@ -95,16 +99,25 @@ void RotaryEncoderTask(void *pvParameters) {
         }
 
         caesarKey = position / 2;
-      break;
+        break;
 
       case STATE_PRACTICE:
-      break;
+        break;
 
       case STATE_LOG:
-      break;
+        break;
 
       case STATE_SETTING:
-      break;
+        break;
+
+      case STATE_HELP:
+        position = (long)(raw_position % ((NUM_HELP_LINES - 2) * 2));
+        if (position < 0) {
+          position += (NUM_HELP_LINES - 2) * 2;
+        }
+
+        help_line = position / 2;
+        break;
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -168,7 +181,17 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
             u8g2.drawBox(125, 64/NUM_ITEMS * item_selected, 3, 64/NUM_ITEMS);
             break;
-          default:
+          case STATE_HELP:
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(25, 15, "HELP");
+            u8g2.drawBitmap(4, 2, 16/8, 16, bitmap_icon_help);
+            u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
+            u8g2.drawBox(125, 64/(NUM_HELP_LINES - 2) * help_line, 3, 64/(NUM_HELP_LINES - 2));
+            
+            u8g2.setFont(u8g_font_6x12);
+            for (int i = 0; i < 3; i++) {
+              u8g2.drawStr(4, 30 + (15 * i), morsecode_cs[i+help_line]);
+            }
             break;
         }
         xSemaphoreGive(i2cMutex);
@@ -284,6 +307,11 @@ void LCDDisplayTask(void *pvParameters) {
         case STATE_PRACTICE:
         case STATE_LOG:
         case STATE_SETTING:
+        case STATE_HELP:
+          lcd.setCursor(0, 0);
+          lcd.print("SW1:SEL SW2:BACK");
+          lcd.setCursor(0, 1);
+          lcd.print("SW3:SAVELOG");
           break;
       }
 
@@ -364,11 +392,13 @@ void MainTask(void *pvParameters) {
       case STATE_IDLE:
         if (btn1.isPressed()) {
           saved_item_selected = item_selected;
+          if (selState == STATE_NORMAL) {
+            vTaskResume(commsTaskHandle);
+          }
           currentState = selState;
           encoder.clearCount();
-          vTaskResume(commsTaskHandle);
         }
-      break;
+        break;
 
       case STATE_NORMAL:
         if (btn2.isPressed()) {
@@ -378,16 +408,18 @@ void MainTask(void *pvParameters) {
           buzFlag = 0;
           vTaskSuspend(commsTaskHandle);
         }
-      break;
+        break;
 
       case STATE_PRACTICE:
       case STATE_LOG:
       case STATE_SETTING:
+        break;
+      case STATE_HELP:
         if (btn2.isPressed()) {
           currentState = STATE_IDLE;
           encoder.setCount(saved_item_selected * 2);
         }
-      break;
+        break;
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));
