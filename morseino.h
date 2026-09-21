@@ -40,10 +40,14 @@ extern volatile SystemState selState;
 extern volatile bool ledFlag;
 extern volatile bool buzFlag;
 extern volatile uint8_t caesarKey;
+extern volatile char practice_challengingNum;
+extern volatile bool practice_correctFlag;
 
 extern volatile int item_selected;
 extern volatile int item_sel_previous;
 extern volatile int item_sel_next;
+
+extern volatile int help_line;
 
 extern TaskHandle_t commsTaskHandle;
 

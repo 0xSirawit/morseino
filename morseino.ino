@@ -5,6 +5,8 @@ volatile SystemState selState = STATE_IDLE;
 volatile bool ledFlag = false;
 volatile bool buzFlag = false;
 volatile uint8_t caesarKey = 0;
+volatile char practice_challengingNum;
+volatile bool practice_correctFlag = 0;
 
 String globalSeqBuffer = "";
 String globalMessageBuffer = "";
@@ -163,6 +165,7 @@ void OLEDDisplayTask(void *pvParameters) {
     u8g2.firstPage();
     do {
       if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        char displayChar[2] = {LETTERS_NUMBERS[practice_challengingNum], '\0'};
         switch (currentState) {
           case STATE_IDLE:
             u8g2.drawBitmap(0, 22, 128/8, 21, bitmap_item_sel_outline);
@@ -186,6 +189,10 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(25, 15, "PRACTICE");
             u8g2.drawBitmap(4, 2, 16/8, 16, bitmap_icon_practice);
+            u8g2.setFont(u8g_font_profont29);
+            
+            u8g2.drawStr(58, 44, displayChar);
+            u8g2.drawStr(4, 64, MORSE_CODE[practice_challengingNum].c_str());
             break;
 
           case STATE_HELP:
@@ -235,7 +242,6 @@ void LCDDisplayTask(void *pvParameters) {
 
   for (;;) {
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-
       if (currentState != lastState) {
         lcd.clear();
         lastState = currentState;
@@ -312,6 +318,22 @@ void LCDDisplayTask(void *pvParameters) {
           break;
 
         case STATE_PRACTICE:
+          lcd.setCursor(14, 0);
+          lcd.write(byte(0));
+
+          lcd.setCursor(15, 0);
+          if (digitalRead(PIN_SW1)){
+            lcd.write(byte(4));
+          } else {
+            lcd.write(byte(1));
+          }
+
+          if ((xTaskGetTickCount() - blinkTime) >= pdMS_TO_TICKS(500)) {
+            blinkState ^= 1;
+            blinkTime = xTaskGetTickCount();
+            lcd.setCursor(0, 0);
+            lcd.print(blinkState ? ">" : " ");
+          }
           break;
         case STATE_LOG:
           break;
@@ -396,15 +418,21 @@ void CommsTask(void *pvParameters) {
 
 void MainTask(void *pvParameters) {
   int saved_item_selected = 0;
+  SystemState lastState = (SystemState)-1;
 
   for (;;) {
+    if (currentState != lastState) {
+      if (currentState == STATE_PRACTICE) {
+        practice_challengingNum = random(36);
+      }
+      lastState = currentState;
+    }
+
     switch (currentState) {
       case STATE_IDLE:
-        buzFlag = 0;
         if (btn1.isPressed()) {
-          buzFlag = 1;
           saved_item_selected = item_selected;
-          if (selState == STATE_NORMAL) {
+          if ((selState == STATE_NORMAL) || (selState == STATE_PRACTICE)) {
             vTaskResume(commsTaskHandle);
           }
           currentState = selState;
@@ -413,24 +441,29 @@ void MainTask(void *pvParameters) {
         break;
 
       case STATE_NORMAL:
-        buzFlag = 0;
         if (btn2.isPressed()) {
-          buzFlag = 1;
-          currentState = STATE_IDLE;
-          encoder.setCount(saved_item_selected * 2);
           vTaskSuspend(commsTaskHandle);
+          backToIdle(saved_item_selected);
         }
         break;
 
       case STATE_PRACTICE:
+        practice_correctFlag = 0;
+        if (practice_correctFlag) {
+          practice_challengingNum = random(36);
+          practice_correctFlag = 1;
+        }
+
+        if (btn2.isPressed()) {
+          vTaskSuspend(commsTaskHandle);
+          backToIdle(saved_item_selected);
+        }
+        break;
       case STATE_LOG:
       case STATE_SETTING:
       case STATE_HELP:
-      buzFlag = 0;
         if (btn2.isPressed()) {
-          buzFlag = 1;
-          currentState = STATE_IDLE;
-          encoder.setCount(saved_item_selected * 2);
+          backToIdle(saved_item_selected);
         }
         break;
     }
@@ -438,5 +471,11 @@ void MainTask(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
+
+void backToIdle(int saved_item_selected) {
+  currentState = STATE_IDLE;
+  encoder.setCount(saved_item_selected * 2);
+}
+
 void loop() {
 }
