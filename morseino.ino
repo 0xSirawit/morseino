@@ -181,6 +181,13 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
             u8g2.drawBox(125, 64/NUM_ITEMS * item_selected, 3, 64/NUM_ITEMS);
             break;
+
+          case STATE_PRACTICE:
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(25, 15, "PRACTICE");
+            u8g2.drawBitmap(4, 2, 16/8, 16, bitmap_icon_practice);
+            break;
+
           case STATE_HELP:
             u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(25, 15, "HELP");
@@ -305,8 +312,11 @@ void LCDDisplayTask(void *pvParameters) {
           break;
 
         case STATE_PRACTICE:
+          break;
         case STATE_LOG:
+          break;
         case STATE_SETTING:
+          break;
         case STATE_HELP:
           lcd.setCursor(0, 0);
           lcd.print("SW1:SEL SW2:BACK");
@@ -338,8 +348,8 @@ void CommsTask(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(5));
       }
 
-      buzFlag = false;
-      ledFlag = false;
+      buzFlag = 0;
+      ledFlag = 0;
       releaseStartTick = xTaskGetTickCount();
 
       unsigned long duration = (releaseStartTick - pressStartTick) * portTICK_PERIOD_MS;
@@ -390,7 +400,9 @@ void MainTask(void *pvParameters) {
   for (;;) {
     switch (currentState) {
       case STATE_IDLE:
+        buzFlag = 0;
         if (btn1.isPressed()) {
+          buzFlag = 1;
           saved_item_selected = item_selected;
           if (selState == STATE_NORMAL) {
             vTaskResume(commsTaskHandle);
@@ -401,11 +413,11 @@ void MainTask(void *pvParameters) {
         break;
 
       case STATE_NORMAL:
+        buzFlag = 0;
         if (btn2.isPressed()) {
+          buzFlag = 1;
           currentState = STATE_IDLE;
           encoder.setCount(saved_item_selected * 2);
-          ledFlag = 0;
-          buzFlag = 0;
           vTaskSuspend(commsTaskHandle);
         }
         break;
@@ -413,9 +425,10 @@ void MainTask(void *pvParameters) {
       case STATE_PRACTICE:
       case STATE_LOG:
       case STATE_SETTING:
-        break;
       case STATE_HELP:
+      buzFlag = 0;
         if (btn2.isPressed()) {
+          buzFlag = 1;
           currentState = STATE_IDLE;
           encoder.setCount(saved_item_selected * 2);
         }
