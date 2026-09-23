@@ -50,6 +50,7 @@ extern volatile int item_sel_next;
 extern volatile int help_line;
 
 extern TaskHandle_t commsTaskHandle;
+extern TaskHandle_t practiceTaskHandle;
 
 extern byte SPEAKER[8];
 extern byte MUTESPEAKER[8];

@@ -7,6 +7,9 @@ volatile bool buzFlag = false;
 volatile uint8_t caesarKey = 0;
 volatile char practice_challengingNum;
 volatile bool practice_correctFlag = 0;
+volatile bool practice_JustResumed = 0;
+volatile bool practice_newSession = 0;
+volatile int practice_score = 0;
 
 String globalSeqBuffer = "";
 String globalMessageBuffer = "";
@@ -14,6 +17,7 @@ SemaphoreHandle_t seqBufferMutex = NULL;
 SemaphoreHandle_t i2cMutex = NULL;
 
 TaskHandle_t commsTaskHandle = NULL;
+TaskHandle_t practiceTaskHandle = NULL;
 
 // Buttons
 DebouncedButton btn1(PIN_BT1, BUTTON_PRESSED);
@@ -72,7 +76,9 @@ void setup() {
 
   // Suspendable Tasks
   xTaskCreate(CommsTask, "Comms_Task", 2048, NULL, 1, &commsTaskHandle);
+  xTaskCreate(PracticeTask, "Practice_Task", 2048, NULL, 1, &practiceTaskHandle);
   vTaskSuspend(commsTaskHandle);
+  vTaskSuspend(practiceTaskHandle);
 }
 
 void RotaryEncoderTask(void *pvParameters) {
@@ -244,6 +250,10 @@ void LCDDisplayTask(void *pvParameters) {
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
       if (currentState != lastState) {
         lcd.clear();
+        displayBuffer = "";
+        messageDisplay = "";
+        lastDisplayBuffer = "";
+        lastMessageDisplay = "";
         lastState = currentState;
       }
 
@@ -318,6 +328,14 @@ void LCDDisplayTask(void *pvParameters) {
           break;
 
         case STATE_PRACTICE:
+          lcd.setCursor(7, 0);
+          lcd.print("PTS:");
+
+          if (practice_score < 10) {
+            lcd.print(0);
+          }
+          lcd.print(practice_score);
+
           lcd.setCursor(14, 0);
           lcd.write(byte(0));
 
@@ -333,6 +351,36 @@ void LCDDisplayTask(void *pvParameters) {
             blinkTime = xTaskGetTickCount();
             lcd.setCursor(0, 0);
             lcd.print(blinkState ? ">" : " ");
+          }
+
+          if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            displayBuffer = globalSeqBuffer;
+            messageDisplay = globalMessageBuffer;
+            xSemaphoreGive(seqBufferMutex);
+          }
+
+          if (displayBuffer.length() > 5) {
+            displayBuffer = displayBuffer.substring(0, 5);
+          }
+
+          if (messageDisplay.length() > 16) {
+            messageDisplay = messageDisplay.substring(messageDisplay.length() - 16);
+          }
+
+          if (displayBuffer != lastDisplayBuffer) {
+            lcd.setCursor(1, 0);
+            lcd.print("     ");
+            lcd.setCursor(1, 0);
+            lcd.print(displayBuffer);
+            lastDisplayBuffer = displayBuffer;
+          }
+
+          if (messageDisplay != lastMessageDisplay) {
+            lcd.setCursor(0, 1);
+            lcd.print("                ");
+            lcd.setCursor(0, 1);
+            lcd.print(messageDisplay);
+            lastMessageDisplay = messageDisplay;
           }
           break;
         case STATE_LOG:
@@ -416,15 +464,113 @@ void CommsTask(void *pvParameters) {
   }
 }
 
+void PracticeTask (void *pvParameters) {
+  TickType_t pressStartTick = 0;
+  TickType_t releaseStartTick = 0;
+  float unitTime = 100.0;
+  SystemState lastState = (SystemState)-1;
+  String localSeqBuffer = "";
+
+  for (;;) {
+    if (practice_JustResumed) {
+      practice_JustResumed = 0;
+
+      if (practice_newSession) {
+        practice_newSession = 0;
+        unitTime = 100.0;
+        localSeqBuffer = "";
+        pressStartTick = 0;
+        releaseStartTick = 0;
+        practice_score = 0;
+      }
+
+      String morseChar = MORSE_CODE[practice_challengingNum];
+      for (int i = 0; i < morseChar.length() && !practice_JustResumed; i++) {
+        if (morseChar[i] == '-') {
+          buzFlag = 1;
+          vTaskDelay(pdMS_TO_TICKS(unitTime * 3));
+        } else {
+          buzFlag = 1;
+          vTaskDelay(pdMS_TO_TICKS(unitTime));
+        }
+        buzFlag = 0;
+        vTaskDelay(pdMS_TO_TICKS(unitTime));
+      }
+      buzFlag = 0;
+    }
+
+    if (btn4.isPressed()) {
+      buzFlag = 1;
+      ledFlag = 1;
+      pressStartTick = xTaskGetTickCount();
+
+      while (btn4.isPressed()) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+      }
+
+      buzFlag = 0;
+      ledFlag = 0;
+      releaseStartTick = xTaskGetTickCount();
+
+      unsigned long duration = (releaseStartTick - pressStartTick) * portTICK_PERIOD_MS;
+      char symbol = (duration < (unsigned long)(unitTime * 2.0)) ? '.' : '-';
+
+      localSeqBuffer = localSeqBuffer + symbol;
+
+      if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        globalSeqBuffer = localSeqBuffer;
+        xSemaphoreGive(seqBufferMutex);
+      }
+
+      if (symbol == '.') {
+        Serial.print(".");
+        unitTime = (unitTime * 3.0 + (float)duration) / 4.0;
+      } else {
+        Serial.print("-");
+        unitTime = (unitTime * 3.0 + ((float)duration / 3.0)) / 4.0;
+      }
+    } else {
+      if (localSeqBuffer.length() > 0) {
+        if (((xTaskGetTickCount() - releaseStartTick) * portTICK_PERIOD_MS) > (unitTime * 2.5)) {
+          char decodedChar = morseDecode(localSeqBuffer);
+
+          Serial.print(" -> ");
+          Serial.println(decodedChar);
+
+          localSeqBuffer = "";
+
+          if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            globalSeqBuffer = "";
+            globalMessageBuffer = globalMessageBuffer + decodedChar;
+            xSemaphoreGive(seqBufferMutex);
+          }
+
+          if (decodedChar == LETTERS_NUMBERS[practice_challengingNum]) {
+            practice_correctFlag = 1;
+          }
+        }
+      }
+      buzFlag = 0;
+      ledFlag = 0;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
 void MainTask(void *pvParameters) {
   int saved_item_selected = 0;
   SystemState lastState = (SystemState)-1;
 
   for (;;) {
     if (currentState != lastState) {
-      if (currentState == STATE_PRACTICE) {
-        practice_challengingNum = random(36);
+      if (currentState == STATE_PRACTICE || currentState == STATE_NORMAL) {
+        if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          globalSeqBuffer = "";
+          globalMessageBuffer = "";
+          xSemaphoreGive(seqBufferMutex);
+        }
       }
+     
       lastState = currentState;
     }
 
@@ -432,8 +578,13 @@ void MainTask(void *pvParameters) {
       case STATE_IDLE:
         if (btn1.isPressed()) {
           saved_item_selected = item_selected;
-          if ((selState == STATE_NORMAL) || (selState == STATE_PRACTICE)) {
+          if (selState == STATE_NORMAL) {
             vTaskResume(commsTaskHandle);
+          } else if (selState == STATE_PRACTICE) {
+            practice_challengingNum = random(36);
+            practice_JustResumed = 1;
+            practice_newSession = 1;
+            vTaskResume(practiceTaskHandle);
           }
           currentState = selState;
           encoder.clearCount();
@@ -442,21 +593,26 @@ void MainTask(void *pvParameters) {
 
       case STATE_NORMAL:
         if (btn2.isPressed()) {
-          vTaskSuspend(commsTaskHandle);
           backToIdle(saved_item_selected);
+          vTaskSuspend(commsTaskHandle);
         }
         break;
 
       case STATE_PRACTICE:
-        practice_correctFlag = 0;
         if (practice_correctFlag) {
           practice_challengingNum = random(36);
-          practice_correctFlag = 1;
+          practice_correctFlag = 0;
+          practice_JustResumed = 1;
+          practice_score += 1;
+        }
+
+        if (practice_score > 99) {
+          practice_score = 0;
         }
 
         if (btn2.isPressed()) {
-          vTaskSuspend(commsTaskHandle);
           backToIdle(saved_item_selected);
+          vTaskSuspend(practiceTaskHandle);
         }
         break;
       case STATE_LOG:
@@ -473,6 +629,8 @@ void MainTask(void *pvParameters) {
 }
 
 void backToIdle(int saved_item_selected) {
+  buzFlag = 0;
+  ledFlag = 0;
   currentState = STATE_IDLE;
   encoder.setCount(saved_item_selected * 2);
 }
