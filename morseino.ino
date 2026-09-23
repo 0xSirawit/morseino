@@ -1,7 +1,16 @@
 #include "morseino.h"
 
+
+volatile SystemState settingSelState = STATE_DEVICENAME;
+volatile int positionLetter =0;
+String nameDevice ="MORSEINO01";
+
+volatile float globalUnitTime = 100.0;
+String unitTimeBuffer = "100";
+
 volatile SystemState currentState = STATE_IDLE;
 volatile SystemState selState = STATE_IDLE;
+
 volatile bool ledFlag = false;
 volatile bool buzFlag = false;
 volatile uint8_t caesarKey = 0;
@@ -10,6 +19,8 @@ volatile bool practice_correctFlag = 0;
 volatile bool practice_JustResumed = 0;
 volatile bool practice_newSession = 0;
 volatile int practice_score = 0;
+
+// volatile uint8_t selectIndexLetter = 0;
 
 String globalSeqBuffer = "";
 String globalMessageBuffer = "";
@@ -37,9 +48,34 @@ volatile int item_selected = 1;
 volatile int item_sel_previous = 0;
 volatile int item_sel_next = 2;
 
+// Display setting 1-3
+volatile int settingSelected = 1;
+volatile int settingSelectPrevious = 0;
+volatile int settingSelectNext = 2;
+
+// Display Select Letter
+volatile int letterSelected = 3;
+volatile int letterSelectPrevious0 = 0;
+volatile int letterSelectPrevious1 = 1;
+volatile int letterSelectPrevious2 = 2;
+volatile int letterSelectNext2 = 4;
+volatile int letterSelectNext1 = 5;
+volatile int letterSelectNext0 = 6;
+
+// Display Select Number 
+volatile int numberSelected = 3;
+volatile int numberSelectPrevious0 = 0;
+volatile int numberSelectPrevious1 = 1;
+volatile int numberSelectPrevious2 = 2;
+volatile int numberSelectNext2 = 4;
+volatile int numberSelectNext1 = 5;
+volatile int numberSelectNext0 = 6;
+
 volatile int help_line = 0;
 
 const SystemState stateLookup[] = {STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING, STATE_HELP};
+
+const SystemState stateSettingLookup[] = {STATE_DEVICENAME, STATE_UNITTIME, STATE_TONE};
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 ESP32Encoder encoder;
@@ -85,6 +121,8 @@ void RotaryEncoderTask(void *pvParameters) {
   long position;
   int NUM_OP = NUM_ITEMS*2;
 
+  int NUM_OPSET = NUM_SETTING_ITEM*2;
+
   for (;;) {
     int64_t raw_position = encoder.getCount();
     switch (currentState) {
@@ -116,6 +154,46 @@ void RotaryEncoderTask(void *pvParameters) {
         break;
 
       case STATE_SETTING:
+        position = (long)(raw_position % NUM_OPSET);
+        if (position < 0) {
+          position += NUM_OPSET;
+        }
+
+        settingSelected = position / 2;
+        settingSelectPrevious = (settingSelected + (NUM_SETTING_ITEM - 1)) % NUM_SETTING_ITEM;
+        settingSelectNext = (settingSelected + 1) % NUM_SETTING_ITEM;
+        settingSelState = stateSettingLookup[settingSelected];
+        break;
+
+      case STATE_DEVICENAME:
+        position = (long)(raw_position % (NUM_LETTER_ITEM *2));
+        if (position < 0) {
+          position += NUM_LETTER_ITEM*2;
+        }
+
+        letterSelected = position /2;
+        letterSelectPrevious0 = (letterSelected + (NUM_LETTER_ITEM -3)) % NUM_LETTER_ITEM;
+        letterSelectPrevious1 = (letterSelected + (NUM_LETTER_ITEM -2)) % NUM_LETTER_ITEM;
+        letterSelectPrevious2 = (letterSelected + (NUM_LETTER_ITEM -1)) % NUM_LETTER_ITEM;
+        letterSelectNext2 = (letterSelected + (NUM_LETTER_ITEM +1)) % NUM_LETTER_ITEM;
+        letterSelectNext1 = (letterSelected + (NUM_LETTER_ITEM +2)) % NUM_LETTER_ITEM;
+        letterSelectNext0 = (letterSelected +(NUM_LETTER_ITEM +3)) % NUM_LETTER_ITEM;
+
+
+        break;
+      case STATE_UNITTIME:
+        position = (long)(raw_position % (NUM_NUMBER_ITEM *2));
+        if (position < 0) {
+          position += NUM_NUMBER_ITEM*2;
+        }
+
+        numberSelected = position /2;
+        numberSelectPrevious0 = (numberSelected + (NUM_NUMBER_ITEM -3)) % NUM_NUMBER_ITEM;
+        numberSelectPrevious1 = (numberSelected + (NUM_NUMBER_ITEM -2)) % NUM_NUMBER_ITEM;
+        numberSelectPrevious2 = (numberSelected + (NUM_NUMBER_ITEM -1)) % NUM_NUMBER_ITEM;
+        numberSelectNext2 = (numberSelected + (NUM_NUMBER_ITEM +1)) % NUM_NUMBER_ITEM;
+        numberSelectNext1 = (numberSelected + (NUM_NUMBER_ITEM +2)) % NUM_NUMBER_ITEM;
+        numberSelectNext0 = (numberSelected +(NUM_NUMBER_ITEM +3)) % NUM_NUMBER_ITEM;
         break;
 
       case STATE_HELP:
@@ -213,6 +291,92 @@ void OLEDDisplayTask(void *pvParameters) {
               u8g2.drawStr(4, 30 + (15 * i), morsecode_cs[i+help_line]);
             }
             break;
+
+          case STATE_SETTING:
+
+            u8g2.drawBitmap(0, 22, 128/8, 21, bitmapSettingSelOutline);
+
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(25, 15, settingItems[settingSelectPrevious]);
+            u8g2.drawBitmap(4, 2, 16/8, 16, settingmapIncons[settingSelectPrevious]);
+
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(25, 15+20+2, settingItems[settingSelected]);
+            u8g2.drawBitmap(4, 24, 16/8, 16, settingmapIncons[settingSelected]);
+
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(25, 59, settingItems[settingSelectNext]);
+            u8g2.drawBitmap(4, 46, 16/8, 16, settingmapIncons[settingSelectNext]);
+
+            u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
+            u8g2.drawBox(125, 64/NUM_SETTING_ITEM * settingSelected, 3, 64/NUM_SETTING_ITEM);
+            break;
+
+          case STATE_DEVICENAME:
+            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.drawStr(20, 14, "SET NAME DEVICE");
+            u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[0]);
+
+            u8g2.drawBitmap(57, 23, 2, 20, bitmapLetterSelOutline);
+
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(9, 39, letterItems[letterSelectPrevious0]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(26, 39, letterItems[letterSelectPrevious1]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(43, 39, letterItems[letterSelectPrevious2]);
+
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(60, 39, letterItems[letterSelected]);
+
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(60+ 7 +10, 39, letterItems[letterSelectNext2]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(60 +10+7+10 +7 ,39, letterItems[letterSelectNext1]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(60 +10+7 +10+7+10 +7, 39, letterItems[letterSelectNext0]);
+
+            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.drawStr(2, 62,"NAME:");
+            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.drawStr(40, 62,nameDevice.c_str());
+
+            break;
+
+          case STATE_UNITTIME:
+             u8g2.setFont(u8g_font_7x14B); 
+            u8g2.drawStr(20, 14, "SET UNIT TIME");
+            u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[1]);
+
+            u8g2.drawBitmap(57, 23, 2, 20, bitmapLetterSelOutline);
+
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(9, 39, numberItems[numberSelectPrevious0]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(26, 39, numberItems[numberSelectPrevious1]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(43, 39, numberItems[numberSelectPrevious2]);
+
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(60, 39, numberItems[numberSelected]);
+
+
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(60 +10+7, 39, numberItems[numberSelectNext2]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(60 +10+7+10 +7 ,39, numberItems[numberSelectNext1]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(60 +10+7 +10+7+10 +7, 39, numberItems[numberSelectNext0]);
+
+            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.drawStr(2, 62,"VALUE:");
+            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.drawStr(47, 62,unitTimeBuffer.c_str());
+
+            u8g2.setFont(u8g_font_7x14); 
+            u8g2.drawStr(103, 62,"ms");
+
+            break;
         }
         xSemaphoreGive(i2cMutex);
       }
@@ -263,7 +427,8 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.print("--- MORSEINO ---");
 
           lcd.setCursor(0, 1);
-          lcd.print("NAME: STATION101");
+          lcd.print("NAME: ");
+          lcd.print(nameDevice);
           break;
 
         case STATE_NORMAL:
@@ -386,7 +551,31 @@ void LCDDisplayTask(void *pvParameters) {
         case STATE_LOG:
           break;
         case STATE_SETTING:
+          lcd.setCursor(0,0);
+          lcd.print("NAME: ");
+          lcd.print(nameDevice);
+          
+          lcd.setCursor(0,1);
+          lcd.print("UNIT: ");
+          lcd.print(globalUnitTime);
+          lcd.setCursor(14,1);
+          lcd.print("ms");
           break;
+
+        case STATE_DEVICENAME:
+          lcd.setCursor(0,0);
+          lcd.print("SW1:SEL SW2:BACK");
+          lcd.setCursor(0,1);
+          lcd.print("SW3:DELETE");
+          break;
+
+        case STATE_UNITTIME:
+          lcd.setCursor(0,0);
+          lcd.print("SW1:SEL SW2:BACK");
+          lcd.setCursor(0,1);
+          lcd.print("SW3:DELETE");
+          break;
+
         case STATE_HELP:
           lcd.setCursor(0, 0);
           lcd.print("SW1:SEL SW2:BACK");
@@ -405,13 +594,14 @@ void LCDDisplayTask(void *pvParameters) {
 void CommsTask(void *pvParameters) {
   TickType_t pressStartTick = 0;
   TickType_t releaseStartTick = 0;
-  float unitTime = 100.0;
   String localSeqBuffer = "";
+  float unitTime = globalUnitTime;
 
   for (;;) {
     if (btn4.isPressed()) {
       buzFlag = 1;
       ledFlag = 1;
+
       pressStartTick = xTaskGetTickCount();
 
       while (btn4.isPressed()) {
@@ -467,9 +657,9 @@ void CommsTask(void *pvParameters) {
 void PracticeTask (void *pvParameters) {
   TickType_t pressStartTick = 0;
   TickType_t releaseStartTick = 0;
-  float unitTime = 100.0;
   SystemState lastState = (SystemState)-1;
   String localSeqBuffer = "";
+  float unitTime = globalUnitTime;
 
   for (;;) {
     if (practice_JustResumed) {
@@ -477,7 +667,7 @@ void PracticeTask (void *pvParameters) {
 
       if (practice_newSession) {
         practice_newSession = 0;
-        unitTime = 100.0;
+        unitTime = globalUnitTime;
         localSeqBuffer = "";
         pressStartTick = 0;
         releaseStartTick = 0;
@@ -559,6 +749,8 @@ void PracticeTask (void *pvParameters) {
 
 void MainTask(void *pvParameters) {
   int saved_item_selected = 0;
+
+  int savedSettingSelected = 0;
   SystemState lastState = (SystemState)-1;
 
   for (;;) {
@@ -588,6 +780,7 @@ void MainTask(void *pvParameters) {
           }
           currentState = selState;
           encoder.clearCount();
+          while (btn1.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
         }
         break;
 
@@ -617,6 +810,75 @@ void MainTask(void *pvParameters) {
         break;
       case STATE_LOG:
       case STATE_SETTING:
+        if (btn1.isPressed()) {
+          savedSettingSelected = settingSelected;
+          currentState = settingSelState;
+          encoder.clearCount();
+          while (btn1.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        if (btn2.isPressed()) {
+          vTaskSuspend(commsTaskHandle);
+          backToIdle(saved_item_selected);
+          while (btn2.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        break;
+
+      case STATE_DEVICENAME:
+        if (btn1.isPressed()){
+          if (nameDevice.length() < 11) {
+            nameDevice += letterItems[letterSelected];
+            
+          }
+          while (btn1.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        if (btn3.isPressed()) {
+          if (nameDevice.length() > 0){
+            nameDevice.remove(nameDevice.length() - 1);
+            
+          }
+          while (btn3.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+         
+        if (btn2.isPressed()) {
+          currentState = STATE_SETTING;
+          encoder.setCount(savedSettingSelected * 2);
+          while (btn2.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        break;
+      case STATE_UNITTIME:
+        if (btn1.isPressed()){
+          if (unitTimeBuffer.length() < 4) {
+          unitTimeBuffer += numberItems[numberSelected];
+          while (btn1.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
+          }
+        }
+        if (btn3.isPressed()) {
+          if (unitTimeBuffer.length() > 0) {
+            unitTimeBuffer.remove(unitTimeBuffer.length()-1);
+            
+          }
+          while (btn3.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        
+        if (btn2.isPressed()) {
+          if (unitTimeBuffer.length() > 0) {
+            globalUnitTime = unitTimeBuffer.toFloat();
+          }
+          currentState = STATE_SETTING;
+          encoder.setCount(savedSettingSelected * 2);
+          while (btn2.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        break;
+      case STATE_TONE:
+        if (btn2.isPressed()) {
+          currentState = STATE_SETTING;
+          encoder.setCount(savedSettingSelected * 2);
+          while (btn2.isPressed()) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        break;
+
       case STATE_HELP:
         if (btn2.isPressed()) {
           backToIdle(saved_item_selected);
@@ -627,6 +889,7 @@ void MainTask(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
+
 
 void backToIdle(int saved_item_selected) {
   buzFlag = 0;
