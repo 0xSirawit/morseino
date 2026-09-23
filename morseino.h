@@ -31,8 +31,37 @@ enum SystemState {
   STATE_PRACTICE,
   STATE_LOG,
   STATE_SETTING,
-  STATE_HELP
+  STATE_HELP,
+  // In setting state
+  STATE_DEVICENAME,
+  STATE_UNITTIME,
+  STATE_TONE
+  
 };
+
+extern const SystemState stateSettingLookup[];
+extern volatile SystemState settingSelState;
+extern volatile int settingSelected;
+extern volatile int settingSelectPrevious;
+extern volatile int settingSelectNext;
+
+extern volatile float unitTime;
+
+extern volatile int letterSelected;
+extern volatile int letterSelectPrevious0;
+extern volatile int letterSelectPrevious1;
+extern volatile int letterSelectPrevious2;
+extern volatile int letterSelectNext2;
+extern volatile int letterSelectNext1;
+extern volatile int letterSelectNext0;
+
+extern volatile int numberSelected;
+extern volatile int numberSelectPrevious0;
+extern volatile int numberSelectPrevious1;
+extern volatile int numberSelectPrevious2;
+extern volatile int numberSelectNext2;
+extern volatile int numberSelectNext1;
+extern volatile int numberSelectNext0;
 
 extern const SystemState stateLookup[];
 extern volatile SystemState currentState;
