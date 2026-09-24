@@ -3,8 +3,10 @@
 
 #include <Arduino.h>
 
-extern const char LETTERS_NUMBERS[36];
-extern const String MORSE_CODE[36];
+#define TOTAL_CHARECTERS 36
+
+extern const char LETTERS_NUMBERS[TOTAL_CHARECTERS];
+extern const String MORSE_CODE[TOTAL_CHARECTERS];
 
 char morseDecode(String seq);
 

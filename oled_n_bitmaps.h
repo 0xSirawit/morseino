@@ -40,7 +40,6 @@ extern const unsigned char settingMapVolume[];
 extern const unsigned char bitmapSettingSelOutline[];
 extern const unsigned char bitmapLetterSelOutline[];
 
-
 extern const char letterItems[NUM_LETTER_ITEM][MAX_LETTER_ITEM_LENGTH];
 extern const unsigned char* const settingmapIncons[NUM_SETTING_ITEM] PROGMEM;
 extern const char settingItems[NUM_SETTING_ITEM][MAX_SETTING_ITEM_LENGTH];
