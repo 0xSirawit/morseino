@@ -7,6 +7,10 @@ const char LETTERS_NUMBERS[36] = {
   '5', '6', '7', '8', '9', '0'
 };
 
+uint8_t broadcastAddress[] = {
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
+
 const String MORSE_CODE[36] = {
   ".-",    // A
   "-...",  // B
@@ -55,4 +59,21 @@ char morseDecode(String seq) {
     }
   }
   return result;
+}
+
+void broadcastChar(char c) {
+  uint8_t data = (uint8_t)c;
+
+  esp_err_t result = esp_now_send(
+    broadcastAddress,
+    &data,
+    sizeof(data)
+  );
+
+  if (result == ESP_OK) {
+    Serial.print("Broadcast: ");
+    Serial.println(c);
+  } else {
+    Serial.println("Broadcast failed");
+  }
 }
