@@ -4,6 +4,13 @@ String nameDevice = "MORSEINO01";
 String unitTimeBuffer = "100";
 volatile float globalUnitTime = 100.0;
 
+const int toneFrequencies[NUM_TONE_ITEM] = {
+  NOTE_De,
+  NOTE_C4, NOTE_D4, NOTE_E4, NOTE_F4, NOTE_G4, NOTE_A4, NOTE_B4,
+  NOTE_C5, NOTE_D5, NOTE_E5, NOTE_F5, NOTE_G5, NOTE_A5, NOTE_B5
+};
+volatile int globalBuzTone = toneFrequencies[0]; 
+
 volatile SystemState currentState = STATE_IDLE;
 volatile SystemState selState = STATE_IDLE;
 volatile SystemState settingSelState = STATE_SETTING_DEVICENAME;
@@ -16,6 +23,7 @@ volatile bool practice_correctFlag = 0;
 volatile bool practice_JustResumed = 0;
 volatile bool practice_newSession = 0;
 volatile int practice_score = 0;
+
 volatile int positionLetter = 0;
 
 String globalSeqBuffer = "";
@@ -66,6 +74,15 @@ volatile int numberSelectPrevious2 = 2;
 volatile int numberSelectNext2 = 4;
 volatile int numberSelectNext1 = 5;
 volatile int numberSelectNext0 = 6;
+
+// Display Select Tone
+volatile int toneSelected = 3;
+volatile int toneSelectPrevious0 = 0;
+volatile int toneSelectPrevious1 = 1;
+volatile int toneSelectPrevious2 = 2;
+volatile int toneSelectNext2 = 4;
+volatile int toneSelectNext1 = 5;
+volatile int toneSelectNext0 = 6;
 
 volatile int help_line = 0;
 
@@ -127,6 +144,7 @@ void RotaryEncoderTask(void *pvParameters) {
   int NUM_OPSET = NUM_SETTING_ITEM*2;
   int NUM_OPCHARS = NUM_LETTER_ITEM*2;
   int NUM_OPNUMBER_ITEM = NUM_NUMBER_ITEM*2;
+  int NUM_OPTONE_ITEM = NUM_TONE_ITEM*2;
 
   for (;;) {
     int64_t raw_position = encoder.getCount();
@@ -177,6 +195,16 @@ void RotaryEncoderTask(void *pvParameters) {
         numberSelectNext0 = (numberSelected +(NUM_NUMBER_ITEM +3)) % NUM_NUMBER_ITEM;
         break;
 
+      case STATE_SETTING_TONE:
+        toneSelected = getPosition(raw_position, NUM_OPTONE_ITEM);
+        toneSelectPrevious0 = (toneSelected + (NUM_TONE_ITEM -3)) % NUM_TONE_ITEM;
+        toneSelectPrevious1 = (toneSelected + (NUM_TONE_ITEM -2)) % NUM_TONE_ITEM;
+        toneSelectPrevious2 = (toneSelected + (NUM_TONE_ITEM -1)) % NUM_TONE_ITEM;
+        toneSelectNext2 = (toneSelected + (NUM_TONE_ITEM +1)) % NUM_TONE_ITEM;
+        toneSelectNext1 = (toneSelected + (NUM_TONE_ITEM +2)) % NUM_TONE_ITEM;
+        toneSelectNext0 = (toneSelected +(NUM_TONE_ITEM +3)) % NUM_TONE_ITEM;        
+        break;
+
       case STATE_HELP:
         help_line = getPosition(raw_position, (NUM_HELP_LINES - 2) * 2);
         break;
@@ -208,7 +236,7 @@ void BUZTask(void *pvParameters) {
 
   for (;;) {
     if (buzFlag && !lastBuzState && digitalRead(PIN_SW1)) {
-      tone(PIN_BUZ, BUZTONE);
+      tone(PIN_BUZ, globalBuzTone);
       lastBuzState = true;
     }
     else if (!buzFlag && lastBuzState) {
@@ -319,6 +347,7 @@ void OLEDDisplayTask(void *pvParameters) {
             break;
 
           case STATE_SETTING_UNITTIME:
+
             u8g2.setFont(u8g_font_7x14B); 
             u8g2.drawStr(20, 14, "SET UNIT TIME");
             u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[1]);
@@ -352,6 +381,36 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawStr(103, 62,"ms");
             break;
 
+          case STATE_SETTING_TONE:
+            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.drawStr(20, 14, "SET BUZZ TONE");
+            u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[2]);
+
+            u8g2.drawBitmap(53, 23, 3, 20, bitmapToneSelOutline);
+
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(1, 39, toneItems[toneSelectPrevious0]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(19, 39, toneItems[toneSelectPrevious1]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(37, 39, toneItems[toneSelectPrevious2]);
+
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(57, 39, toneItems[toneSelected]);
+
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(77, 39, toneItems[toneSelectNext2]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(95,39, toneItems[toneSelectNext1]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(113 ,39, toneItems[toneSelectNext0]);
+
+            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.drawStr(2, 62,"NOTE:");
+            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.drawStr(40, 62,nameToneItems[toneSelected]);
+
+            break;
         }
         xSemaphoreGive(i2cMutex);
       }
@@ -551,6 +610,15 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.print("SW1:SEL SW2:BACK");
           lcd.setCursor(0,1);
           lcd.print("SW3:DELETE");
+          break;
+
+        case STATE_SETTING_TONE:
+          lcd.setCursor(0,0);
+          lcd.print("SW1:SEL SW2:BACK");
+          lcd.setCursor(0,1);
+          lcd.print("FREQ:");
+          lcd.print(globalBuzTone);
+          lcd.print("Hz");
           break;
 
         case STATE_HELP:
@@ -813,20 +881,20 @@ void MainTask(void *pvParameters) {
         if ((btn3.wasPressed()) && (nameDevice.length() > 0)) {
           nameDevice.remove(nameDevice.length() - 1);
         }
-         
         if (btn2.wasPressed()) {
           currentState = STATE_SETTING;
           encoder.setCount(savedSettingSelected * 2);
         }
 
         break;
+        
       case STATE_SETTING_UNITTIME:
         if (btn1.wasPressed()){
           if (unitTimeBuffer.length() < 4) {
             unitTimeBuffer += numberItems[numberSelected];
           }
         }
-    
+
         if (btn3.wasPressed()) {
           if (unitTimeBuffer.length() > 0) {
             unitTimeBuffer.remove(unitTimeBuffer.length()-1);            
@@ -843,6 +911,13 @@ void MainTask(void *pvParameters) {
         break;
 
       case STATE_SETTING_TONE:
+        if (btn1.isHeld()) {
+          buzFlag =1;
+          globalBuzTone = toneFrequencies[toneSelected];
+        } else {
+          buzFlag =0;
+        }
+        
         if (btn2.wasPressed()) {
           currentState = STATE_SETTING;
           encoder.setCount(savedSettingSelected * 2);

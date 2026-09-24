@@ -142,6 +142,18 @@ const unsigned char bitmapLetterSelOutline [] PROGMEM = {
   0xff, 0xf8
 };
 
+const unsigned char bitmapToneSelOutline [] PROGMEM = {
+  0xff, 0xff, 0xfb,
+
+  0x40, 0x00,0x03, 0x40, 0x00,0x03, 0x40, 0x00,0x03, 0x40, 0x00,0x03,
+  0x40, 0x00,0x03, 0x40, 0x00,0x03, 0x40, 0x00,0x03, 0x40, 0x00,0x03,
+  0x40, 0x00,0x03, 0x40, 0x00,0x03, 0x40, 0x00,0x03, 0x40, 0x00,0x03,
+  0x40, 0x00,0x03, 0x40, 0x00,0x03, 0x40, 0x00,0x03, 0x40, 0x00,0x03,
+
+  0xff, 0xff,0xfb,
+  0xff, 0xff ,0xfb
+};
+
 
 const char letterItems[NUM_LETTER_ITEM][MAX_LETTER_ITEM_LENGTH] = {
   {"A"},{"B"},{"C"},{"D"},{"E"},{"F"},{"G"},{"H"},{"I"},{"J"},{"K"},
@@ -153,6 +165,18 @@ const char letterItems[NUM_LETTER_ITEM][MAX_LETTER_ITEM_LENGTH] = {
 
 const char numberItems[NUM_NUMBER_ITEM][MAX_NUMBER_ITEM_LENGTH] = {
   {"0"},{"1"},{"2"},{"3"},{"4"},{"5"},{"6"},{"7"},{"8"},{"9"}
+};
+
+const char toneItems[NUM_TONE_ITEM][MAX_TONE_ITEM_LENGTH] = {
+  {"De"},
+  {"C4"},{"D4"},{"E4"},{"F4"},{"G4"},{"A4"},{"B4"},
+  {"C5"},{"D5"},{"E5"},{"F5"},{"G5"},{"A5"},{"B5"}
+};
+
+const char nameToneItems[NUM_TONE_ITEM][MAX_NAME_TONE_ITEM_LENGTH] = {
+  {"Default"},
+  {"DO-OC4"},{"RE-OC4"},{"MI-CO4"},{"FA-CO4"},{"SOL-OC4"},{"LA-OC4"},{"TI-OC4"},
+  {"DO-OC5"},{"RE-OC5"},{"MI-OC5"},{"FA-OC5"},{"SOL-OC5"},{"LA-OC5"},{"TI-OC5"}
 };
 
 const char settingItems [NUM_SETTING_ITEM][MAX_SETTING_ITEM_LENGTH] ={

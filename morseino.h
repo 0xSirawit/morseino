@@ -20,7 +20,26 @@
 #define PIN_BUZ 16
 #define PIN_SW1 26
 
-#define BUZTONE 1000
+#define NOTE_De 1000  // Default
+
+#define NOTE_C4  262  // Do
+#define NOTE_D4  294  // Re
+#define NOTE_E4  330  // Mi
+#define NOTE_F4  349  // Fa
+#define NOTE_G4  392  // Sol
+#define NOTE_A4  440  // La
+#define NOTE_B4  494  // Ti
+
+#define NOTE_C5  523  // Do
+#define NOTE_D5  587  // Re
+#define NOTE_E5  659  // Mi
+#define NOTE_F5  698  // Fa
+#define NOTE_G5  784  // Sol
+#define NOTE_A5  880  // La
+#define NOTE_B5  988  // Ti
+
+
+
 
 #define BUTTON_PRESSED LOW
 #define BUTTON_RELEASED HIGH
@@ -39,6 +58,16 @@ enum SystemState {
   STATE_SETTING_TONE
   
 };
+
+extern volatile int globalBuzTone;
+extern volatile int toneSelected;
+extern volatile int toneSelectPrevious0;
+extern volatile int toneSelectPrevious1;
+extern volatile int toneSelectPrevious2;
+extern volatile int toneSelectNext2;
+extern volatile int toneSelectNext1;
+extern volatile int toneSelectNext0;
+extern const int toneFrequencies[NUM_TONE_ITEM];
 
 extern const SystemState stateSettingLookup[];
 extern volatile SystemState settingSelState;

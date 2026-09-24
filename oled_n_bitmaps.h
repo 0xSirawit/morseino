@@ -16,6 +16,14 @@
 #define NUM_HELP_LINES 14
 #define MAX_HELP_LINE_LENGTH 21
 
+#define NUM_TONE_ITEM 15
+#define MAX_TONE_ITEM_LENGTH 3
+#define MAX_NAME_TONE_ITEM_LENGTH 8
+
+extern const char toneItems[NUM_TONE_ITEM][MAX_TONE_ITEM_LENGTH];
+extern const char nameToneItems[NUM_TONE_ITEM][MAX_NAME_TONE_ITEM_LENGTH];
+extern const unsigned char bitmapToneSelOutline [] PROGMEM;
+
 extern const char numberItems[NUM_NUMBER_ITEM][MAX_NUMBER_ITEM_LENGTH];
 
 extern const unsigned char bitmap_icon_signaling[];
