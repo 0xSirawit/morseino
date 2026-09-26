@@ -23,6 +23,9 @@ String globalRecieveSeqBuffer = "";
 SemaphoreHandle_t seqBufferMutex = NULL;
 SemaphoreHandle_t i2cMutex = NULL;
 
+String lastSentMessage = "";
+String lastRecvMessage = "";
+
 TaskHandle_t commsTaskHandle = NULL;
 TaskHandle_t practiceTaskHandle = NULL;
 
@@ -266,6 +269,13 @@ void BUZTask(void *pvParameters) {
 void OLEDDisplayTask(void *pvParameters) {
   for (;;) {
     u8g2.firstPage();
+    String sentText = "";
+    String recvText = "";
+    if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      sentText = lastSentMessage;
+      recvText = lastRecvMessage;
+      xSemaphoreGive(seqBufferMutex);
+    }
     do {
       if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         char displayChar[2] = { LETTERS_NUMBERS[practice_challengingNum], '\0' };
@@ -286,6 +296,18 @@ void OLEDDisplayTask(void *pvParameters) {
 
             u8g2.drawBitmap(128 - 8, 0, 8 / 8, 64, bitmap_scrollbar_background);
             u8g2.drawBox(125, 64 / NUM_ITEMS * item_selected, 3, 64 / NUM_ITEMS);
+            break;
+
+          case STATE_NORMAL:
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(25, 15, "SIGNALING");
+            u8g2.drawBitmap(4, 2, 16 / 8, 16, bitmap_icon_signaling);
+
+            u8g2.setFont(u8g_font_6x12);
+            u8g2.drawStr(4, 36, "TX:");
+            u8g2.drawStr(28, 36, sentText.substring(max(0, (int)sentText.length() - 16)).c_str());
+            u8g2.drawStr(4, 56, "RX:");
+            u8g2.drawStr(28, 56, recvText.substring(max(0, (int)recvText.length() - 16)).c_str());
             break;
 
           case STATE_PRACTICE:
@@ -524,8 +546,13 @@ void CommsTask(void *pvParameters) {
 
       if (showRx) {
         localSeqBuffer = "";
-        globalTxBuffer = "";
-        showRx = false;
+        if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          lastRecvMessage = globalRxBuffer;
+          globalRxBuffer = "";
+          globalTxBuffer = "";
+          showRx = false;
+          xSemaphoreGive(seqBufferMutex);
+        }
         while (btn4.isPressed()) {
           vTaskDelay(pdMS_TO_TICKS(10));
         }
@@ -584,6 +611,7 @@ void CommsTask(void *pvParameters) {
         String msg = "";
         if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
           msg = globalTxBuffer;
+          lastSentMessage = msg;
           globalTxBuffer = "";
           txFlushRequested = false;
           xSemaphoreGive(seqBufferMutex);
@@ -596,6 +624,7 @@ void CommsTask(void *pvParameters) {
         }
       } else if (showRx && (xTaskGetTickCount() - lastRxTick) > pdMS_TO_TICKS(10000)) {
         if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          lastRecvMessage = globalRxBuffer;
           globalRxBuffer = "";
           showRx = false;
           xSemaphoreGive(seqBufferMutex);
