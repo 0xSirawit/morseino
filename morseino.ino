@@ -26,6 +26,11 @@ SemaphoreHandle_t i2cMutex = NULL;
 String lastSentMessage = "";
 String lastRecvMessage = "";
 
+RTC_DS1307 rtc;
+
+String lastSentTime = "--:--";
+String lastRecvTime = "--:--";
+
 TaskHandle_t commsTaskHandle = NULL;
 TaskHandle_t practiceTaskHandle = NULL;
 
@@ -66,6 +71,11 @@ void setup() {
   WiFi.mode(WIFI_STA);
   macAddress = getMacAddress();
   WiFi.begin(ssid, password);
+  if (!rtc.begin()) {
+    Serial.println("RTC not found");
+  } else if (!rtc.isrunning()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW Init Failed");
@@ -271,9 +281,13 @@ void OLEDDisplayTask(void *pvParameters) {
     u8g2.firstPage();
     String sentText = "";
     String recvText = "";
+    String sentTime = "";
+    String recvTime = "";
     if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
       sentText = lastSentMessage;
       recvText = lastRecvMessage;
+      sentTime = lastSentTime;
+      recvTime = lastRecvTime;
       xSemaphoreGive(seqBufferMutex);
     }
     do {
@@ -305,9 +319,12 @@ void OLEDDisplayTask(void *pvParameters) {
 
             u8g2.setFont(u8g_font_6x12);
             u8g2.drawStr(4, 36, "TX:");
-            u8g2.drawStr(28, 36, sentText.substring(max(0, (int)sentText.length() - 16)).c_str());
+            u8g2.drawStr(24, 36, sentText.substring(max(0, (int)sentText.length() - 11)).c_str());
+            u8g2.drawStr(128 - 30 - 2, 36, sentTime.c_str());
+
             u8g2.drawStr(4, 56, "RX:");
-            u8g2.drawStr(28, 56, recvText.substring(max(0, (int)recvText.length() - 16)).c_str());
+            u8g2.drawStr(24, 56, recvText.substring(max(0, (int)recvText.length() - 11)).c_str());
+            u8g2.drawStr(128 - 30 - 2, 56, recvTime.c_str());
             break;
 
           case STATE_PRACTICE:
@@ -535,6 +552,19 @@ void LCDDisplayTask(void *pvParameters) {
   }
 }
 
+String rtcTimeString(uint32_t secondsAgo) {
+  String result = "--:--";
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    DateTime t = rtc.now() - TimeSpan(secondsAgo);
+    xSemaphoreGive(i2cMutex);
+
+    char buf[6];
+    snprintf(buf, sizeof(buf), "%02d:%02d", t.hour(), t.minute());
+    result = buf;
+  }
+  return result;
+}
+
 void CommsTask(void *pvParameters) {
   TickType_t pressStartTick = 0;
   TickType_t releaseStartTick = 0;
@@ -546,7 +576,10 @@ void CommsTask(void *pvParameters) {
 
       if (showRx) {
         localSeqBuffer = "";
+        uint32_t ago = pdTICKS_TO_MS(xTaskGetTickCount() - lastRxTick) / 1000;
+        String recvTime = rtcTimeString(ago);
         if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          lastRecvTime = recvTime;
           lastRecvMessage = globalRxBuffer;
           globalRxBuffer = "";
           globalTxBuffer = "";
@@ -609,7 +642,9 @@ void CommsTask(void *pvParameters) {
         }
       } else if (globalTxBuffer.length() > 0 && (txFlushRequested || (xTaskGetTickCount() - releaseStartTick) > pdMS_TO_TICKS(10000))) {
         String msg = "";
+        String sentTime = rtcTimeString(0);
         if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          lastSentTime = sentTime;
           msg = globalTxBuffer;
           lastSentMessage = msg;
           globalTxBuffer = "";
@@ -623,7 +658,10 @@ void CommsTask(void *pvParameters) {
           sendPost(msg);
         }
       } else if (showRx && (xTaskGetTickCount() - lastRxTick) > pdMS_TO_TICKS(10000)) {
+        uint32_t ago = pdTICKS_TO_MS(xTaskGetTickCount() - lastRxTick) / 1000;
+        String recvTime = rtcTimeString(ago);
         if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          lastRecvTime = recvTime;
           lastRecvMessage = globalRxBuffer;
           globalRxBuffer = "";
           showRx = false;
