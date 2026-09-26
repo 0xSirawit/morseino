@@ -12,6 +12,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <HTTPClient.h>
 
 #define PIN_BT4 19
 #define PIN_BT1 18

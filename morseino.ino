@@ -11,12 +11,15 @@ volatile bool practice_JustResumed = 0;
 volatile bool practice_newSession = 0;
 volatile int practice_score = 0;
 
+volatile bool txFlushRequested = false;
+volatile TickType_t lastRxTick = 0;
 bool showRx = false;
 String currentRxChar = "";
 String globalTxBuffer = "";
 String globalRxBuffer = "";
 String globalMessageBuffer = "";
 String globalSeqBuffer = "";
+String globalRecieveSeqBuffer = "";
 SemaphoreHandle_t seqBufferMutex = NULL;
 SemaphoreHandle_t i2cMutex = NULL;
 
@@ -45,6 +48,8 @@ volatile int help_line = 0;
 
 const SystemState stateLookup[] = { STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING, STATE_HELP };
 
+String macAddress = "";
+
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 ESP32Encoder encoder;
 
@@ -56,6 +61,8 @@ void setup() {
 
   // ESP Now
   WiFi.mode(WIFI_STA);
+  macAddress = getMacAddress();
+  WiFi.begin(ssid, password);
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW Init Failed");
@@ -70,7 +77,7 @@ void setup() {
     broadcastAddress,
     6);
 
-  peerInfo.channel = 1;
+  peerInfo.channel = 0;
   peerInfo.encrypt = false;
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
@@ -103,28 +110,72 @@ void setup() {
   xTaskCreate(DebugTask, "Debug_Task", 2048, NULL, 1, NULL);
 
   // Suspendable Tasks
-  xTaskCreate(CommsTask, "Comms_Task", 2048, NULL, 1, &commsTaskHandle);
+  xTaskCreate(CommsTask, "Comms_Task", 8192, NULL, 1, &commsTaskHandle);
   xTaskCreate(PracticeTask, "Practice_Task", 2048, NULL, 1, &practiceTaskHandle);
   vTaskSuspend(commsTaskHandle);
   vTaskSuspend(practiceTaskHandle);
+}
+
+void sendPost(String message) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("!WL_CONNECTED");
+    return;
+  }
+  Serial.print("apiUrl : ");
+  Serial.print(apiUrl);
+  HTTPClient http;
+  http.begin(apiUrl);
+  http.addHeader("Content-Type", "application/json");
+
+  String json = "{\"mac_address\":\"" + macAddress + "\",\"msg\":\"" + message + "\"}";
+  int code = http.POST(json);
+  if (code > 0) {
+    Serial.printf("\nPOST %d\n", code);
+    Serial.println(http.getString());
+  } else {
+    Serial.printf("\nPOST failed: %s\n", http.errorToString(code).c_str());
+  }
+  http.end();
 }
 
 void OnDataRecv(
   const esp_now_recv_info_t *info,
   const uint8_t *data,
   int len) {
-  if (len <= 0) {
-    return;
-  }
   char receivedChar = (char)data[0];
 
-  if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-    globalRxBuffer += receivedChar;
-    currentRxChar = String(receivedChar);
-    showRx = true;
-    Serial.print("Recieve : ");
-    Serial.print(receivedChar);
-    xSemaphoreGive(seqBufferMutex);
+  if (receivedChar == '.') {
+    buzFlag = 1;
+    ledFlag = 1;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    buzFlag = 0;
+    ledFlag = 0;
+    globalRecieveSeqBuffer += receivedChar;
+  } else if (receivedChar == '-') {
+    buzFlag = 1;
+    ledFlag = 1;
+    vTaskDelay(pdMS_TO_TICKS(300));
+    buzFlag = 0;
+    ledFlag = 0;
+    globalRecieveSeqBuffer += receivedChar;
+  } else if (receivedChar == 'e') {
+    char decodeReciever = morseDecode(globalRecieveSeqBuffer);
+    globalRecieveSeqBuffer = "";
+    if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      if (!showRx) {
+        globalRxBuffer = "";
+        if (globalTxBuffer.length() > 0) {
+          txFlushRequested = true;
+        }
+      }
+      globalRxBuffer += decodeReciever;
+      currentRxChar = String(decodeReciever);
+      showRx = true;
+      lastRxTick = xTaskGetTickCount();
+      Serial.print("Recieve : ");
+      Serial.print(decodeReciever);
+      xSemaphoreGive(seqBufferMutex);
+    }
   }
 }
 
@@ -473,6 +524,7 @@ void CommsTask(void *pvParameters) {
 
       if (showRx) {
         localSeqBuffer = "";
+        globalTxBuffer = "";
         showRx = false;
         while (btn4.isPressed()) {
           vTaskDelay(pdMS_TO_TICKS(10));
@@ -495,6 +547,8 @@ void CommsTask(void *pvParameters) {
       unsigned long duration = (releaseStartTick - pressStartTick) * portTICK_PERIOD_MS;
       char symbol = (duration < (unsigned long)(unitTime * 2.0)) ? '.' : '-';
 
+      broadcastChar(symbol);
+
       localSeqBuffer = localSeqBuffer + symbol;
 
       if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -514,10 +568,9 @@ void CommsTask(void *pvParameters) {
       if (localSeqBuffer.length() > 0) {
         if (((xTaskGetTickCount() - releaseStartTick) * portTICK_PERIOD_MS) > (unitTime * 2.5)) {
           char decodedChar = morseDecode(localSeqBuffer);
-
+          broadcastChar('e');
           Serial.print(" -> ");
           Serial.println(decodedChar);
-          broadcastChar(decodedChar);
           localSeqBuffer = "";
 
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -526,6 +579,26 @@ void CommsTask(void *pvParameters) {
             globalMessageBuffer += decodedChar;
             xSemaphoreGive(seqBufferMutex);
           }
+        }
+      } else if (globalTxBuffer.length() > 0 && (txFlushRequested || (xTaskGetTickCount() - releaseStartTick) > pdMS_TO_TICKS(10000))) {
+        String msg = "";
+        if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          msg = globalTxBuffer;
+          globalTxBuffer = "";
+          txFlushRequested = false;
+          xSemaphoreGive(seqBufferMutex);
+        }
+        if (msg.length() > 0) {
+          Serial.println("Message Send Post");
+          Serial.print("Mac Address : ");
+          Serial.print(macAddress);
+          sendPost(msg);
+        }
+      } else if (showRx && (xTaskGetTickCount() - lastRxTick) > pdMS_TO_TICKS(10000)) {
+        if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          globalRxBuffer = "";
+          showRx = false;
+          xSemaphoreGive(seqBufferMutex);
         }
       }
       buzFlag = 0;

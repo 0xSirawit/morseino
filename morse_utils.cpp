@@ -1,4 +1,9 @@
 #include "morse_utils.h"
+#include <esp_mac.h>
+
+const char* ssid = "NINE";
+const char* password = "ninenine";
+const char* apiUrl = "https://lectures-strategic-merchant-pottery.trycloudflare.com/messages";
 
 const char LETTERS_NUMBERS[36] = {
   'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
@@ -76,4 +81,19 @@ void broadcastChar(char c) {
   } else {
     Serial.println("Broadcast failed");
   }
+}
+
+String getMacAddress() {
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char macStr[18];
+
+  snprintf(
+    macStr,
+    sizeof(macStr),
+    "%02X:%02X:%02X:%02X:%02X:%02X",
+    mac[0], mac[1], mac[2],
+    mac[3], mac[4], mac[5]
+  );
+  return String(macStr);
 }
