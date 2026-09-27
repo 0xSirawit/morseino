@@ -6,15 +6,16 @@
 #include <U8g2lib.h>
 #include <ESP32Encoder.h>
 #include <Wire.h>
-#include "debounce_button.h"
-#include "morse_utils.h"
-#include "oled_n_bitmaps.h"
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <HTTPClient.h>
 #include <RTClib.h>
+#include "debounce_button.h"
+#include "morse_utils.h"
+#include "oled_n_bitmaps.h"
 
+// I/O
 #define PIN_BT4 19
 #define PIN_BT1 18
 #define PIN_BT2 13
@@ -25,8 +26,11 @@
 #define PIN_BUZ 16
 #define PIN_SW1 26
 
-#define NOTE_De 1000  // Default
+#define BUTTON_PRESSED LOW
+#define BUTTON_RELEASED HIGH
 
+// Notes for buzzer
+#define NOTE_De 1000  // Default
 #define NOTE_C4  262  // Do
 #define NOTE_D4  294  // Re
 #define NOTE_E4  330  // Mi
@@ -34,7 +38,6 @@
 #define NOTE_G4  392  // Sol
 #define NOTE_A4  440  // La
 #define NOTE_B4  494  // Ti
-
 #define NOTE_C5  523  // Do
 #define NOTE_D5  587  // Re
 #define NOTE_E5  659  // Mi

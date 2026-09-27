@@ -35,6 +35,7 @@ String globalTxBuffer = "";
 String globalRxBuffer = "";
 String globalMessageBuffer = "";
 String globalSeqBuffer = "";
+
 SemaphoreHandle_t seqBufferMutex = NULL;
 SemaphoreHandle_t i2cMutex = NULL;
 QueueHandle_t rxSoundQueue = NULL;
@@ -360,7 +361,6 @@ void RotaryEncoderTask(void *pvParameters) {
         help_line = getPosition(raw_position, (NUM_HELP_LINES - 2) * 2);
         break;
     }
-
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
@@ -423,6 +423,7 @@ void OLEDDisplayTask(void *pvParameters) {
   String sentTime = "";
   String recvTime = "";
   String nowText = "";
+
   for (;;) {
     if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
       sentText = lastSentMessage;
@@ -431,10 +432,11 @@ void OLEDDisplayTask(void *pvParameters) {
       recvTime = lastRecvTime;
       xSemaphoreGive(seqBufferMutex);
     }
-    // อ่าน RTC นอก page loop เพราะ i2cMutex ถูก take อยู่ระหว่างวาด
+
     if (currentState == STATE_NORMAL) {
       nowText = "Time: " + rtcDateTimeString();
     }
+
     u8g2.firstPage();
     do {
       if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -472,7 +474,6 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawStr(24, 44, recvText.substring(max(0, (int)recvText.length() - 11)).c_str());
             u8g2.drawStr(128 - 30 - 2, 44, recvTime.c_str());
 
-            // 6x12 กว้างเกินจอสำหรับ 22 ตัวอักษร เลยใช้ 5x8
             u8g2.setFont(u8g2_font_5x8_tr);
             u8g2.drawStr(4, 60, nowText.c_str());
             break;
@@ -635,18 +636,18 @@ void LCDDisplayTask(void *pvParameters) {
 
   LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-  xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50));
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    lcd.init();
+    lcd.backlight();
 
-  lcd.init();
-  lcd.backlight();
+    lcd.createChar(0, SPEAKER);
+    lcd.createChar(1, MUTESPEAKER);
+    lcd.createChar(4, UNMUTESPEAKER);
+    lcd.createChar(2, LOCK);
+    lcd.createChar(3, UNLOCK);
 
-  lcd.createChar(0, SPEAKER);
-  lcd.createChar(1, MUTESPEAKER);
-  lcd.createChar(4, UNMUTESPEAKER);
-  lcd.createChar(2, LOCK);
-  lcd.createChar(3, UNLOCK);
-
-  xSemaphoreGive(i2cMutex);
+    xSemaphoreGive(i2cMutex);
+  }
 
   for (;;) {
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -770,18 +771,8 @@ void LCDDisplayTask(void *pvParameters) {
             displayBuffer = displayBuffer.substring(0, 5);
           }
 
-          if (showRx) {
-            String rxText = globalRxBuffer;
-            if (rxText.length() > 11) {
-              rxText = rxText.substring(rxText.length() - 11);
-            }
-            messageDisplay = "RX: " + rxText;
-          } else {
-            String txText = globalTxBuffer;
-            if (txText.length() > 11) {
-              txText = txText.substring(txText.length() - 11);
-            }
-            messageDisplay = "TX: " + txText;
+          if (messageDisplay.length() > 16) {
+            messageDisplay = messageDisplay.substring(messageDisplay.length() - 16);
           }
 
           if (displayBuffer != lastDisplayBuffer) {
@@ -850,10 +841,8 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.print("SW3:SAVELOG");
           break;
       }
-
       xSemaphoreGive(i2cMutex);
     }
-
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -892,7 +881,6 @@ void CommsTask(void *pvParameters) {
 
   for (;;) {
     if (btn4.isHeld()) {
-
       if (showRx) {
         localSeqBuffer = "";
         uint32_t ago = pdTICKS_TO_MS(xTaskGetTickCount() - lastRxTick) / 1000;
