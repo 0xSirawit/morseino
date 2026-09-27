@@ -9,7 +9,7 @@ const int toneFrequencies[NUM_TONE_ITEM] = {
   NOTE_C4, NOTE_D4, NOTE_E4, NOTE_F4, NOTE_G4, NOTE_A4, NOTE_B4,
   NOTE_C5, NOTE_D5, NOTE_E5, NOTE_F5, NOTE_G5, NOTE_A5, NOTE_B5
 };
-volatile int globalBuzTone = toneFrequencies[0]; 
+volatile int globalBuzTone = toneFrequencies[0];
 
 volatile SystemState currentState = STATE_IDLE;
 volatile SystemState selState = STATE_IDLE;
@@ -34,9 +34,9 @@ String globalTxBuffer = "";
 String globalRxBuffer = "";
 String globalMessageBuffer = "";
 String globalSeqBuffer = "";
-String globalRecieveSeqBuffer = "";
 SemaphoreHandle_t seqBufferMutex = NULL;
 SemaphoreHandle_t i2cMutex = NULL;
+QueueHandle_t rxSoundQueue = NULL;
 
 String lastSentMessage = "";
 String lastRecvMessage = "";
@@ -81,7 +81,7 @@ volatile int letterSelectNext2 = 4;
 volatile int letterSelectNext1 = 5;
 volatile int letterSelectNext0 = 6;
 
-// Display Select Number 
+// Display Select Number
 volatile int numberSelected = 3;
 volatile int numberSelectPrevious0 = 0;
 volatile int numberSelectPrevious1 = 1;
@@ -101,8 +101,8 @@ volatile int toneSelectNext0 = 6;
 
 volatile int help_line = 0;
 
-const SystemState stateLookup[] = {STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING, STATE_HELP};
-const SystemState stateSettingLookup[] = {STATE_SETTING_DEVICENAME, STATE_SETTING_UNITTIME, STATE_SETTING_TONE};
+const SystemState stateLookup[] = { STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING, STATE_HELP };
+const SystemState stateSettingLookup[] = { STATE_SETTING_DEVICENAME, STATE_SETTING_UNITTIME, STATE_SETTING_TONE };
 
 String macAddress = "";
 
@@ -115,11 +115,12 @@ void setup() {
 
   seqBufferMutex = xSemaphoreCreateMutex();
   i2cMutex = xSemaphoreCreateMutex();
+  rxSoundQueue = xQueueCreate(64, sizeof(char));
 
-  // ESP Now
   WiFi.mode(WIFI_STA);
   macAddress = getMacAddress();
   WiFi.begin(ssid, password);
+  WiFi.setSleep(false);
   if (!rtc.begin()) {
     Serial.println("RTC not found");
   } else if (!rtc.isrunning()) {
@@ -165,6 +166,7 @@ void setup() {
   // Core Tasks
   xTaskCreate(LEDTask, "LED_Task", 2048, NULL, 1, NULL);
   xTaskCreate(BUZTask, "BUZ_Task", 2048, NULL, 1, NULL);
+  xTaskCreate(RxSoundTask, "RxSound_Task", 2048, NULL, 1, NULL);
   xTaskCreate(LCDDisplayTask, "LCDDisplay_Task", 2048, NULL, 1, NULL);
   xTaskCreate(OLEDDisplayTask, "OLEDDisplay_Task", 8192, NULL, 1, NULL);
   xTaskCreate(RotaryEncoderTask, "RotaryEncoder_Task", 2048, NULL, 1, NULL);
@@ -212,26 +214,25 @@ void OnDataRecv(
   const esp_now_recv_info_t *info,
   const uint8_t *data,
   int len) {
-  char receivedChar = (char)data[0];
+  String receivedSeq = "";
+  for (int i = 0; i < len; i++) {
+    char sym = (char)data[i];
+    if (sym != '.' && sym != '-') {
+      return;
+    }
+    receivedSeq += sym;
+  }
 
-  if (receivedChar == '.') {
-    buzFlag = 1;
-    ledFlag = 1;
-    vTaskDelay(pdMS_TO_TICKS(100));
-    buzFlag = 0;
-    ledFlag = 0;
-    globalRecieveSeqBuffer += receivedChar;
-  } else if (receivedChar == '-') {
-    buzFlag = 1;
-    ledFlag = 1;
-    vTaskDelay(pdMS_TO_TICKS(300));
-    buzFlag = 0;
-    ledFlag = 0;
-    globalRecieveSeqBuffer += receivedChar;
-  } else if (receivedChar == 'e') {
-    char decodeReciever = morseDecode(globalRecieveSeqBuffer);
-    globalRecieveSeqBuffer = "";
-    if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+  if (receivedSeq.length() > 0) {
+    for (int i = 0; i < receivedSeq.length(); i++) {
+      char sym = receivedSeq[i];
+      xQueueSend(rxSoundQueue, &sym, 0);
+    }
+    char gap = ' ';
+    xQueueSend(rxSoundQueue, &gap, 0);
+
+    char decodeReciever = caesarShift(morseDecode(receivedSeq), TOTAL_CHARECTERS - caesarKey);
+    if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
       if (!showRx) {
         globalRxBuffer = "";
         if (globalTxBuffer.length() > 0) {
@@ -245,17 +246,20 @@ void OnDataRecv(
       Serial.print("Recieve : ");
       Serial.print(decodeReciever);
       xSemaphoreGive(seqBufferMutex);
+    } else {
+      Serial.print("Recieve dropped (mutex busy) : ");
+      Serial.println(decodeReciever);
     }
   }
 }
 
 void RotaryEncoderTask(void *pvParameters) {
   long position;
-  int NUM_OP = NUM_ITEMS*2;
-  int NUM_OPSET = NUM_SETTING_ITEM*2;
-  int NUM_OPCHARS = NUM_LETTER_ITEM*2;
-  int NUM_OPNUMBER_ITEM = NUM_NUMBER_ITEM*2;
-  int NUM_OPTONE_ITEM = NUM_TONE_ITEM*2;
+  int NUM_OP = NUM_ITEMS * 2;
+  int NUM_OPSET = NUM_SETTING_ITEM * 2;
+  int NUM_OPCHARS = NUM_LETTER_ITEM * 2;
+  int NUM_OPNUMBER_ITEM = NUM_NUMBER_ITEM * 2;
+  int NUM_OPTONE_ITEM = NUM_TONE_ITEM * 2;
 
   for (;;) {
     int64_t raw_position = encoder.getCount();
@@ -282,38 +286,38 @@ void RotaryEncoderTask(void *pvParameters) {
         settingSelected = getPosition(raw_position, NUM_OPSET);
         settingSelectPrevious = (settingSelected + (NUM_SETTING_ITEM - 1)) % NUM_SETTING_ITEM;
         settingSelectNext = (settingSelected + 1) % NUM_SETTING_ITEM;
-        
+
         settingSelState = stateSettingLookup[settingSelected];
         break;
 
       case STATE_SETTING_DEVICENAME:
         letterSelected = getPosition(raw_position, NUM_OPCHARS);
-        letterSelectPrevious0 = (letterSelected + (NUM_LETTER_ITEM -3)) % NUM_LETTER_ITEM;
-        letterSelectPrevious1 = (letterSelected + (NUM_LETTER_ITEM -2)) % NUM_LETTER_ITEM;
-        letterSelectPrevious2 = (letterSelected + (NUM_LETTER_ITEM -1)) % NUM_LETTER_ITEM;
-        letterSelectNext2 = (letterSelected + (NUM_LETTER_ITEM +1)) % NUM_LETTER_ITEM;
-        letterSelectNext1 = (letterSelected + (NUM_LETTER_ITEM +2)) % NUM_LETTER_ITEM;
-        letterSelectNext0 = (letterSelected +(NUM_LETTER_ITEM +3)) % NUM_LETTER_ITEM;
+        letterSelectPrevious0 = (letterSelected + (NUM_LETTER_ITEM - 3)) % NUM_LETTER_ITEM;
+        letterSelectPrevious1 = (letterSelected + (NUM_LETTER_ITEM - 2)) % NUM_LETTER_ITEM;
+        letterSelectPrevious2 = (letterSelected + (NUM_LETTER_ITEM - 1)) % NUM_LETTER_ITEM;
+        letterSelectNext2 = (letterSelected + (NUM_LETTER_ITEM + 1)) % NUM_LETTER_ITEM;
+        letterSelectNext1 = (letterSelected + (NUM_LETTER_ITEM + 2)) % NUM_LETTER_ITEM;
+        letterSelectNext0 = (letterSelected + (NUM_LETTER_ITEM + 3)) % NUM_LETTER_ITEM;
         break;
-      
+
       case STATE_SETTING_UNITTIME:
-        numberSelected =  getPosition(raw_position, NUM_OPNUMBER_ITEM);
-        numberSelectPrevious0 = (numberSelected + (NUM_NUMBER_ITEM -3)) % NUM_NUMBER_ITEM;
-        numberSelectPrevious1 = (numberSelected + (NUM_NUMBER_ITEM -2)) % NUM_NUMBER_ITEM;
-        numberSelectPrevious2 = (numberSelected + (NUM_NUMBER_ITEM -1)) % NUM_NUMBER_ITEM;
-        numberSelectNext2 = (numberSelected + (NUM_NUMBER_ITEM +1)) % NUM_NUMBER_ITEM;
-        numberSelectNext1 = (numberSelected + (NUM_NUMBER_ITEM +2)) % NUM_NUMBER_ITEM;
-        numberSelectNext0 = (numberSelected +(NUM_NUMBER_ITEM +3)) % NUM_NUMBER_ITEM;
+        numberSelected = getPosition(raw_position, NUM_OPNUMBER_ITEM);
+        numberSelectPrevious0 = (numberSelected + (NUM_NUMBER_ITEM - 3)) % NUM_NUMBER_ITEM;
+        numberSelectPrevious1 = (numberSelected + (NUM_NUMBER_ITEM - 2)) % NUM_NUMBER_ITEM;
+        numberSelectPrevious2 = (numberSelected + (NUM_NUMBER_ITEM - 1)) % NUM_NUMBER_ITEM;
+        numberSelectNext2 = (numberSelected + (NUM_NUMBER_ITEM + 1)) % NUM_NUMBER_ITEM;
+        numberSelectNext1 = (numberSelected + (NUM_NUMBER_ITEM + 2)) % NUM_NUMBER_ITEM;
+        numberSelectNext0 = (numberSelected + (NUM_NUMBER_ITEM + 3)) % NUM_NUMBER_ITEM;
         break;
 
       case STATE_SETTING_TONE:
         toneSelected = getPosition(raw_position, NUM_OPTONE_ITEM);
-        toneSelectPrevious0 = (toneSelected + (NUM_TONE_ITEM -3)) % NUM_TONE_ITEM;
-        toneSelectPrevious1 = (toneSelected + (NUM_TONE_ITEM -2)) % NUM_TONE_ITEM;
-        toneSelectPrevious2 = (toneSelected + (NUM_TONE_ITEM -1)) % NUM_TONE_ITEM;
-        toneSelectNext2 = (toneSelected + (NUM_TONE_ITEM +1)) % NUM_TONE_ITEM;
-        toneSelectNext1 = (toneSelected + (NUM_TONE_ITEM +2)) % NUM_TONE_ITEM;
-        toneSelectNext0 = (toneSelected +(NUM_TONE_ITEM +3)) % NUM_TONE_ITEM;        
+        toneSelectPrevious0 = (toneSelected + (NUM_TONE_ITEM - 3)) % NUM_TONE_ITEM;
+        toneSelectPrevious1 = (toneSelected + (NUM_TONE_ITEM - 2)) % NUM_TONE_ITEM;
+        toneSelectPrevious2 = (toneSelected + (NUM_TONE_ITEM - 1)) % NUM_TONE_ITEM;
+        toneSelectNext2 = (toneSelected + (NUM_TONE_ITEM + 1)) % NUM_TONE_ITEM;
+        toneSelectNext1 = (toneSelected + (NUM_TONE_ITEM + 2)) % NUM_TONE_ITEM;
+        toneSelectNext0 = (toneSelected + (NUM_TONE_ITEM + 3)) % NUM_TONE_ITEM;
         break;
 
       case STATE_HELP:
@@ -355,6 +359,25 @@ void BUZTask(void *pvParameters) {
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+void RxSoundTask(void *pvParameters) {
+  char sym;
+  for (;;) {
+    if (xQueueReceive(rxSoundQueue, &sym, portMAX_DELAY) == pdTRUE) {
+      float unit = globalUnitTime;
+      if (sym == ' ') {
+        vTaskDelay(pdMS_TO_TICKS(unit * 2));
+        continue;
+      }
+      buzFlag = 1;
+      ledFlag = 1;
+      vTaskDelay(pdMS_TO_TICKS(sym == '-' ? unit * 3 : unit));
+      buzFlag = 0;
+      ledFlag = 0;
+      vTaskDelay(pdMS_TO_TICKS(unit));
+    }
   }
 }
 
@@ -433,28 +456,28 @@ void OLEDDisplayTask(void *pvParameters) {
             break;
 
           case STATE_SETTING:
-            u8g2.drawBitmap(0, 22, 128/8, 21, bitmapSettingSelOutline);
+            u8g2.drawBitmap(0, 22, 128 / 8, 21, bitmapSettingSelOutline);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(25, 15, settingItems[settingSelectPrevious]);
-            u8g2.drawBitmap(4, 2, 16/8, 16, settingmapIncons[settingSelectPrevious]);
+            u8g2.drawBitmap(4, 2, 16 / 8, 16, settingmapIncons[settingSelectPrevious]);
 
             u8g2.setFont(u8g_font_7x14B);
-            u8g2.drawStr(25, 15+20+2, settingItems[settingSelected]);
-            u8g2.drawBitmap(4, 24, 16/8, 16, settingmapIncons[settingSelected]);
+            u8g2.drawStr(25, 15 + 20 + 2, settingItems[settingSelected]);
+            u8g2.drawBitmap(4, 24, 16 / 8, 16, settingmapIncons[settingSelected]);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(25, 59, settingItems[settingSelectNext]);
-            u8g2.drawBitmap(4, 46, 16/8, 16, settingmapIncons[settingSelectNext]);
+            u8g2.drawBitmap(4, 46, 16 / 8, 16, settingmapIncons[settingSelectNext]);
 
-            u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
-            u8g2.drawBox(125, 64/NUM_SETTING_ITEM * settingSelected, 3, 64/NUM_SETTING_ITEM);
+            u8g2.drawBitmap(128 - 8, 0, 8 / 8, 64, bitmap_scrollbar_background);
+            u8g2.drawBox(125, 64 / NUM_SETTING_ITEM * settingSelected, 3, 64 / NUM_SETTING_ITEM);
             break;
 
           case STATE_SETTING_DEVICENAME:
-            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(20, 14, "SET NAME DEVICE");
-            u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[0]);
+            u8g2.drawBitmap(2, 1, 16 / 8, 16, settingmapIncons[0]);
 
             u8g2.drawBitmap(57, 23, 2, 20, bitmapLetterSelOutline);
 
@@ -469,24 +492,24 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawStr(60, 39, letterItems[letterSelected]);
 
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60+ 7 +10, 39, letterItems[letterSelectNext2]);
+            u8g2.drawStr(60 + 7 + 10, 39, letterItems[letterSelectNext2]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7+10 +7 ,39, letterItems[letterSelectNext1]);
+            u8g2.drawStr(60 + 10 + 7 + 10 + 7, 39, letterItems[letterSelectNext1]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7 +10+7+10 +7, 39, letterItems[letterSelectNext0]);
+            u8g2.drawStr(60 + 10 + 7 + 10 + 7 + 10 + 7, 39, letterItems[letterSelectNext0]);
 
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(2, 62,"NAME:");
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(40, 62,nameDevice.c_str());
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(2, 62, "NAME:");
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(40, 62, nameDevice.c_str());
 
             break;
 
           case STATE_SETTING_UNITTIME:
 
-            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(20, 14, "SET UNIT TIME");
-            u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[1]);
+            u8g2.drawBitmap(2, 1, 16 / 8, 16, settingmapIncons[1]);
 
             u8g2.drawBitmap(57, 23, 2, 20, bitmapLetterSelOutline);
 
@@ -502,25 +525,25 @@ void OLEDDisplayTask(void *pvParameters) {
 
 
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7, 39, numberItems[numberSelectNext2]);
+            u8g2.drawStr(60 + 10 + 7, 39, numberItems[numberSelectNext2]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7+10 +7 ,39, numberItems[numberSelectNext1]);
+            u8g2.drawStr(60 + 10 + 7 + 10 + 7, 39, numberItems[numberSelectNext1]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7 +10+7+10 +7, 39, numberItems[numberSelectNext0]);
+            u8g2.drawStr(60 + 10 + 7 + 10 + 7 + 10 + 7, 39, numberItems[numberSelectNext0]);
 
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(2, 62,"VALUE:");
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(47, 62,unitTimeBuffer.c_str());
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(2, 62, "VALUE:");
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(47, 62, unitTimeBuffer.c_str());
 
-            u8g2.setFont(u8g_font_7x14); 
-            u8g2.drawStr(103, 62,"ms");
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(103, 62, "ms");
             break;
 
           case STATE_SETTING_TONE:
-            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(20, 14, "SET BUZZ TONE");
-            u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[2]);
+            u8g2.drawBitmap(2, 1, 16 / 8, 16, settingmapIncons[2]);
 
             u8g2.drawBitmap(53, 23, 3, 20, bitmapToneSelOutline);
 
@@ -537,14 +560,14 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(77, 39, toneItems[toneSelectNext2]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(95,39, toneItems[toneSelectNext1]);
+            u8g2.drawStr(95, 39, toneItems[toneSelectNext1]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(113 ,39, toneItems[toneSelectNext0]);
+            u8g2.drawStr(113, 39, toneItems[toneSelectNext0]);
 
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(2, 62,"NOTE:");
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(40, 62,nameToneItems[toneSelected]);
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(2, 62, "NOTE:");
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(40, 62, nameToneItems[toneSelected]);
 
             break;
         }
@@ -732,40 +755,40 @@ void LCDDisplayTask(void *pvParameters) {
             lastMessageDisplay = messageDisplay;
           }
           break;
-          
+
         case STATE_LOG:
           break;
 
         case STATE_SETTING:
-          lcd.setCursor(0,0);
+          lcd.setCursor(0, 0);
           lcd.print("NAME: ");
           lcd.print(nameDevice);
-          
-          lcd.setCursor(0,1);
+
+          lcd.setCursor(0, 1);
           lcd.print("UNIT: ");
           lcd.print(globalUnitTime);
-          lcd.setCursor(14,1);
+          lcd.setCursor(14, 1);
           lcd.print("ms");
           break;
 
         case STATE_SETTING_DEVICENAME:
-          lcd.setCursor(0,0);
+          lcd.setCursor(0, 0);
           lcd.print("SW1:SEL SW2:BACK");
-          lcd.setCursor(0,1);
+          lcd.setCursor(0, 1);
           lcd.print("SW3:DELETE");
           break;
 
         case STATE_SETTING_UNITTIME:
-          lcd.setCursor(0,0);
+          lcd.setCursor(0, 0);
           lcd.print("SW1:SEL SW2:BACK");
-          lcd.setCursor(0,1);
+          lcd.setCursor(0, 1);
           lcd.print("SW3:DELETE");
           break;
 
         case STATE_SETTING_TONE:
-          lcd.setCursor(0,0);
+          lcd.setCursor(0, 0);
           lcd.print("SW1:SEL SW2:BACK");
-          lcd.setCursor(0,1);
+          lcd.setCursor(0, 1);
           lcd.print("FREQ:");
           lcd.print(globalBuzTone);
           lcd.print("Hz");
@@ -842,8 +865,6 @@ void CommsTask(void *pvParameters) {
       unsigned long duration = (releaseStartTick - pressStartTick) * portTICK_PERIOD_MS;
       char symbol = (duration < (unsigned long)(unitTime * 2.0)) ? '.' : '-';
 
-      broadcastChar(symbol);
-
       localSeqBuffer = localSeqBuffer + symbol;
 
       if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -863,7 +884,19 @@ void CommsTask(void *pvParameters) {
       if (localSeqBuffer.length() > 0) {
         if (((xTaskGetTickCount() - releaseStartTick) * portTICK_PERIOD_MS) > (unitTime * 2.5)) {
           char decodedChar = morseDecode(localSeqBuffer);
-          broadcastChar('e');
+          char encryptedChar = caesarShift(decodedChar, caesarKey);
+          int idx = -1;
+          for (int i = 0; i < TOTAL_CHARECTERS; i++) {
+            if (LETTERS_NUMBERS[i] == encryptedChar) {
+              idx = i;
+              break;
+            }
+          }
+
+          if (idx >= 0) {
+            broadcastMorse(MORSE_CODE[idx]);
+          }
+
           Serial.print(" -> ");
           Serial.println(decodedChar);
           localSeqBuffer = "";
@@ -903,8 +936,6 @@ void CommsTask(void *pvParameters) {
           xSemaphoreGive(seqBufferMutex);
         }
       }
-      buzFlag = 0;
-      ledFlag = 0;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -1067,7 +1098,7 @@ void MainTask(void *pvParameters) {
           vTaskSuspend(practiceTaskHandle);
         }
         break;
-        
+
       case STATE_LOG:
         break;
 
@@ -1085,7 +1116,7 @@ void MainTask(void *pvParameters) {
         break;
 
       case STATE_SETTING_DEVICENAME:
-        if (btn1.wasPressed()){
+        if (btn1.wasPressed()) {
           if (nameDevice.length() < 10) {
             nameDevice += letterItems[letterSelected];
           }
@@ -1100,9 +1131,9 @@ void MainTask(void *pvParameters) {
         }
 
         break;
-        
+
       case STATE_SETTING_UNITTIME:
-        if (btn1.wasPressed()){
+        if (btn1.wasPressed()) {
           if (unitTimeBuffer.length() < 4) {
             unitTimeBuffer += numberItems[numberSelected];
           }
@@ -1110,10 +1141,10 @@ void MainTask(void *pvParameters) {
 
         if (btn3.wasPressed()) {
           if (unitTimeBuffer.length() > 0) {
-            unitTimeBuffer.remove(unitTimeBuffer.length()-1);            
+            unitTimeBuffer.remove(unitTimeBuffer.length() - 1);
           }
         }
-        
+
         if (btn2.wasPressed()) {
           if (unitTimeBuffer.length() > 0) {
             globalUnitTime = unitTimeBuffer.toFloat();
@@ -1125,12 +1156,12 @@ void MainTask(void *pvParameters) {
 
       case STATE_SETTING_TONE:
         if (btn1.isHeld()) {
-          buzFlag =1;
+          buzFlag = 1;
           globalBuzTone = toneFrequencies[toneSelected];
         } else {
-          buzFlag =0;
+          buzFlag = 0;
         }
-        
+
         if (btn2.wasPressed()) {
           currentState = STATE_SETTING;
           encoder.setCount(savedSettingSelected * 2);

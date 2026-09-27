@@ -3,7 +3,7 @@
 
 const char* ssid = "NINE";
 const char* password = "ninenine";
-const char* apiUrl = "https://lectures-strategic-merchant-pottery.trycloudflare.com/messages";
+const char* apiUrl = "https://system-equally-oclc-eur.trycloudflare.com/messages";
 
 const char LETTERS_NUMBERS[TOTAL_CHARECTERS] = {
   'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
@@ -66,18 +66,25 @@ char morseDecode(String seq) {
   return result;
 }
 
-void broadcastChar(char c) {
-  uint8_t data = (uint8_t)c;
+char caesarShift(char c, int key) {
+  for (int i = 0; i < TOTAL_CHARECTERS; i++) {
+    if (LETTERS_NUMBERS[i] == c) {
+      return LETTERS_NUMBERS[(i + key) % TOTAL_CHARECTERS];
+    }
+  }
+  return c;
+}
 
+void broadcastMorse(String seq) {
   esp_err_t result = esp_now_send(
     broadcastAddress,
-    &data,
-    sizeof(data)
+    (const uint8_t *)seq.c_str(),
+    seq.length()
   );
 
   if (result == ESP_OK) {
     Serial.print("Broadcast: ");
-    Serial.println(c);
+    Serial.println(seq);
   } else {
     Serial.println("Broadcast failed");
   }

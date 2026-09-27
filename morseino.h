@@ -125,6 +125,7 @@ extern byte UNLOCK[8];
 void DebugTask(void *pvParameters);
 void LEDTask(void *pvParameters);
 void BUZTask(void *pvParameters);
+void RxSoundTask(void *pvParameters);
 void LCDDisplayTask(void *pvParameters);
 void OLEDDisplayTask(void *pvParameters);
 void RotaryEncoderTask(void *pvParameters);
