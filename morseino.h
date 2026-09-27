@@ -43,9 +43,6 @@
 #define NOTE_A5  880  // La
 #define NOTE_B5  988  // Ti
 
-
-
-
 #define BUTTON_PRESSED LOW
 #define BUTTON_RELEASED HIGH
 
@@ -115,6 +112,7 @@ extern volatile int help_line;
 
 extern TaskHandle_t commsTaskHandle;
 extern TaskHandle_t practiceTaskHandle;
+extern TaskHandle_t rxsoundTaskHandle;
 
 extern byte SPEAKER[8];
 extern byte MUTESPEAKER[8];

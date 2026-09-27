@@ -5,11 +5,12 @@ String unitTimeBuffer = "100";
 volatile float globalUnitTime = 100.0;
 
 const int toneFrequencies[NUM_TONE_ITEM] = {
-  NOTE_De,
-  NOTE_C4, NOTE_D4, NOTE_E4, NOTE_F4, NOTE_G4, NOTE_A4, NOTE_B4,
+  NOTE_De, NOTE_C4, NOTE_D4, NOTE_E4, NOTE_F4, NOTE_G4, NOTE_A4, NOTE_B4,
   NOTE_C5, NOTE_D5, NOTE_E5, NOTE_F5, NOTE_G5, NOTE_A5, NOTE_B5
 };
+
 volatile int globalBuzTone = toneFrequencies[0];
+volatile int oldToneSelected = 0;
 
 volatile SystemState currentState = STATE_IDLE;
 volatile SystemState selState = STATE_IDLE;
@@ -48,6 +49,7 @@ String lastRecvTime = "--:--";
 
 TaskHandle_t commsTaskHandle = NULL;
 TaskHandle_t practiceTaskHandle = NULL;
+TaskHandle_t rxsoundTaskHandle = NULL;
 
 // Buttons
 DebouncedButton btn1(PIN_BT1, BUTTON_PRESSED);
@@ -119,8 +121,26 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   macAddress = getMacAddress();
-  WiFi.begin(ssid, password);
   WiFi.setSleep(false);
+  WiFi.begin(ssid, password);
+
+  unsigned long wifiStart = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 8000) {
+    delay(100);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+
+    esp_err_t chErr = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    if (chErr != ESP_OK) {
+      Serial.printf("set_channel failed: %s\n", esp_err_to_name(chErr));
+    }
+  }
+
+  Serial.printf("WiFi: %s, channel: %d\n", WiFi.status() == WL_CONNECTED ? "connected" : "offline", WiFi.channel());
+
   if (!rtc.begin()) {
     Serial.println("RTC not found");
   } else if (!rtc.isrunning()) {
@@ -135,10 +155,7 @@ void setup() {
 
   esp_now_peer_info_t peerInfo = {};
 
-  memcpy(
-    peerInfo.peer_addr,
-    broadcastAddress,
-    6);
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
 
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
@@ -166,18 +183,19 @@ void setup() {
   // Core Tasks
   xTaskCreate(LEDTask, "LED_Task", 2048, NULL, 1, NULL);
   xTaskCreate(BUZTask, "BUZ_Task", 2048, NULL, 1, NULL);
-  xTaskCreate(RxSoundTask, "RxSound_Task", 2048, NULL, 1, NULL);
   xTaskCreate(LCDDisplayTask, "LCDDisplay_Task", 2048, NULL, 1, NULL);
   xTaskCreate(OLEDDisplayTask, "OLEDDisplay_Task", 8192, NULL, 1, NULL);
   xTaskCreate(RotaryEncoderTask, "RotaryEncoder_Task", 2048, NULL, 1, NULL);
-  xTaskCreate(MainTask, "Main_Task", 2048, NULL, 1, NULL);
+  xTaskCreate(MainTask, "Main_Task", 8192, NULL, 1, NULL);
   xTaskCreate(DebugTask, "Debug_Task", 2048, NULL, 1, NULL);
 
   // Suspendable Tasks
   xTaskCreate(CommsTask, "Comms_Task", 8192, NULL, 1, &commsTaskHandle);
+  xTaskCreate(RxSoundTask, "RxSound_Task", 2048, NULL, 1, &rxsoundTaskHandle);
   xTaskCreate(PracticeTask, "Practice_Task", 2048, NULL, 1, &practiceTaskHandle);
   vTaskSuspend(commsTaskHandle);
   vTaskSuspend(practiceTaskHandle);
+  vTaskSuspend(rxsoundTaskHandle);
 }
 
 long getPosition(int raw_position, int limit) {
@@ -196,7 +214,7 @@ void sendPost(String message) {
   Serial.print("apiUrl : ");
   Serial.print(apiUrl);
   HTTPClient http;
-  http.begin(apiUrl);
+  http.begin(String(apiUrl)+"/messages");
   http.addHeader("Content-Type", "application/json");
 
   String json = "{\"mac_address\":\"" + macAddress + "\",\"msg\":\"" + message + "\"}";
@@ -208,6 +226,24 @@ void sendPost(String message) {
     Serial.printf("\nPOST failed: %s\n", http.errorToString(code).c_str());
   }
   http.end();
+}
+
+void updateDeviceName(String deviceName) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("!WL_CONNECTED");
+    return;
+  }
+  HTTPClient http;
+  http.begin(String(apiUrl)+"/devices/name");
+  http.addHeader("Content-Type", "application/json");
+  String json = "{\"mac_address\":\"" + macAddress + "\",\"device_name\":\"" + deviceName + "\"}";
+  int code = http.POST(json);
+  if (code > 0) {
+    Serial.printf("\nPOST %d\n", code);
+    Serial.println(http.getString());
+  } else {
+    Serial.printf("\nPOST failed: %s\n", http.errorToString(code).c_str());
+  }
 }
 
 void OnDataRecv(
@@ -382,12 +418,12 @@ void RxSoundTask(void *pvParameters) {
 }
 
 void OLEDDisplayTask(void *pvParameters) {
+  String sentText = "";
+  String recvText = "";
+  String sentTime = "";
+  String recvTime = "";
+  String nowText = "";
   for (;;) {
-    u8g2.firstPage();
-    String sentText = "";
-    String recvText = "";
-    String sentTime = "";
-    String recvTime = "";
     if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
       sentText = lastSentMessage;
       recvText = lastRecvMessage;
@@ -395,6 +431,11 @@ void OLEDDisplayTask(void *pvParameters) {
       recvTime = lastRecvTime;
       xSemaphoreGive(seqBufferMutex);
     }
+    // อ่าน RTC นอก page loop เพราะ i2cMutex ถูก take อยู่ระหว่างวาด
+    if (currentState == STATE_NORMAL) {
+      nowText = "Time: " + rtcDateTimeString();
+    }
+    u8g2.firstPage();
     do {
       if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         char displayChar[2] = { LETTERS_NUMBERS[practice_challengingNum], '\0' };
@@ -423,13 +464,17 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawBitmap(4, 2, 16 / 8, 16, bitmap_icon_signaling);
 
             u8g2.setFont(u8g_font_6x12);
-            u8g2.drawStr(4, 36, "TX:");
-            u8g2.drawStr(24, 36, sentText.substring(max(0, (int)sentText.length() - 11)).c_str());
-            u8g2.drawStr(128 - 30 - 2, 36, sentTime.c_str());
+            u8g2.drawStr(4, 32, "TX:");
+            u8g2.drawStr(24, 32, sentText.substring(max(0, (int)sentText.length() - 11)).c_str());
+            u8g2.drawStr(128 - 30 - 2, 32, sentTime.c_str());
 
-            u8g2.drawStr(4, 56, "RX:");
-            u8g2.drawStr(24, 56, recvText.substring(max(0, (int)recvText.length() - 11)).c_str());
-            u8g2.drawStr(128 - 30 - 2, 56, recvTime.c_str());
+            u8g2.drawStr(4, 44, "RX:");
+            u8g2.drawStr(24, 44, recvText.substring(max(0, (int)recvText.length() - 11)).c_str());
+            u8g2.drawStr(128 - 30 - 2, 44, recvTime.c_str());
+
+            // 6x12 กว้างเกินจอสำหรับ 22 ตัวอักษร เลยใช้ 5x8
+            u8g2.setFont(u8g2_font_5x8_tr);
+            u8g2.drawStr(4, 60, nowText.c_str());
             break;
 
           case STATE_PRACTICE:
@@ -440,6 +485,10 @@ void OLEDDisplayTask(void *pvParameters) {
 
             u8g2.drawStr(58, 44, displayChar);
             u8g2.drawStr(4, 64, MORSE_CODE[practice_challengingNum].c_str());
+            break;
+          
+          case STATE_LOG:
+            u8g2.drawBitmap(0, 0, 128/8, 64, bitmap_qrcode_web);
             break;
 
           case STATE_HELP:
@@ -479,7 +528,7 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawStr(20, 14, "SET NAME DEVICE");
             u8g2.drawBitmap(2, 1, 16 / 8, 16, settingmapIncons[0]);
 
-            u8g2.drawBitmap(57, 23, 2, 20, bitmapLetterSelOutline);
+            u8g2.drawBitmap(56, 24, 2, 20, bitmapLetterSelOutline);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(9, 39, letterItems[letterSelectPrevious0]);
@@ -502,16 +551,14 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawStr(2, 62, "NAME:");
             u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(40, 62, nameDevice.c_str());
-
             break;
 
           case STATE_SETTING_UNITTIME:
-
             u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(20, 14, "SET UNIT TIME");
             u8g2.drawBitmap(2, 1, 16 / 8, 16, settingmapIncons[1]);
 
-            u8g2.drawBitmap(57, 23, 2, 20, bitmapLetterSelOutline);
+            u8g2.drawBitmap(56, 24, 2, 20, bitmapLetterSelOutline);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(9, 39, numberItems[numberSelectPrevious0]);
@@ -522,7 +569,6 @@ void OLEDDisplayTask(void *pvParameters) {
 
             u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(60, 39, numberItems[numberSelected]);
-
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(60 + 10 + 7, 39, numberItems[numberSelectNext2]);
@@ -545,7 +591,7 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawStr(20, 14, "SET BUZZ TONE");
             u8g2.drawBitmap(2, 1, 16 / 8, 16, settingmapIncons[2]);
 
-            u8g2.drawBitmap(53, 23, 3, 20, bitmapToneSelOutline);
+            u8g2.drawBitmap(53, 24, 3, 20, bitmapToneSelOutline);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(1, 39, toneItems[toneSelectPrevious0]);
@@ -567,8 +613,7 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(2, 62, "NOTE:");
             u8g2.setFont(u8g_font_7x14B);
-            u8g2.drawStr(40, 62, nameToneItems[toneSelected]);
-
+            u8g2.drawStr(40, 62, nameToneItems[oldToneSelected]);
             break;
         }
         xSemaphoreGive(i2cMutex);
@@ -657,9 +702,9 @@ void LCDDisplayTask(void *pvParameters) {
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             displayBuffer = globalSeqBuffer;
             if (showRx) {
-              messageDisplay = "RX : " + globalRxBuffer;
+              messageDisplay = "RX: " + globalRxBuffer;
             } else {
-              messageDisplay = "TX : " + globalTxBuffer;
+              messageDisplay = "TX: " + globalTxBuffer;
             }
             xSemaphoreGive(seqBufferMutex);
           }
@@ -730,13 +775,13 @@ void LCDDisplayTask(void *pvParameters) {
             if (rxText.length() > 11) {
               rxText = rxText.substring(rxText.length() - 11);
             }
-            messageDisplay = "RX : " + rxText;
+            messageDisplay = "RX: " + rxText;
           } else {
             String txText = globalTxBuffer;
             if (txText.length() > 11) {
               txText = txText.substring(txText.length() - 11);
             }
-            messageDisplay = "TX : " + txText;
+            messageDisplay = "TX: " + txText;
           }
 
           if (displayBuffer != lastDisplayBuffer) {
@@ -757,6 +802,10 @@ void LCDDisplayTask(void *pvParameters) {
           break;
 
         case STATE_LOG:
+          lcd.setCursor(0, 0);
+          lcd.print("SCAN THE QRCODE");
+          lcd.setCursor(0, 1);
+          lcd.print("TO VIEW LOGS.");
           break;
 
         case STATE_SETTING:
@@ -791,7 +840,7 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.setCursor(0, 1);
           lcd.print("FREQ:");
           lcd.print(globalBuzTone);
-          lcd.print("Hz");
+          lcd.print("Hz ");
           break;
 
         case STATE_HELP:
@@ -817,6 +866,19 @@ String rtcTimeString(uint32_t secondsAgo) {
 
     char buf[6];
     snprintf(buf, sizeof(buf), "%02d:%02d", t.hour(), t.minute());
+    result = buf;
+  }
+  return result;
+}
+
+String rtcDateTimeString() {
+  String result = "--:-- --/--/----";
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    DateTime t = rtc.now();
+    xSemaphoreGive(i2cMutex);
+
+    char buf[17];
+    snprintf(buf, sizeof(buf), "%02d:%02d %02d/%02d/%04d", t.hour(), t.minute(), t.day(), t.month(), t.year());
     result = buf;
   }
   return result;
@@ -1062,6 +1124,7 @@ void MainTask(void *pvParameters) {
 
           if (selState == STATE_NORMAL) {
             vTaskResume(commsTaskHandle);
+            vTaskResume(rxsoundTaskHandle);
           } else if (selState == STATE_PRACTICE) {
             practice_challengingNum = random(36);
             practice_JustResumed = 1;
@@ -1078,6 +1141,7 @@ void MainTask(void *pvParameters) {
         if (btn2.wasPressed()) {
           backToIdle(saved_item_selected);
           vTaskSuspend(commsTaskHandle);
+          vTaskSuspend(rxsoundTaskHandle);
         }
         break;
 
@@ -1100,6 +1164,9 @@ void MainTask(void *pvParameters) {
         break;
 
       case STATE_LOG:
+        if (btn2.wasPressed()) {
+          backToIdle(saved_item_selected);
+        }
         break;
 
       case STATE_SETTING:
@@ -1110,7 +1177,6 @@ void MainTask(void *pvParameters) {
         }
 
         if (btn2.wasPressed()) {
-          vTaskSuspend(commsTaskHandle);
           backToIdle(saved_item_selected);
         }
         break;
@@ -1128,6 +1194,8 @@ void MainTask(void *pvParameters) {
         if (btn2.wasPressed()) {
           currentState = STATE_SETTING;
           encoder.setCount(savedSettingSelected * 2);
+          Serial.println("In if Update DeviceName");
+          updateDeviceName(nameDevice);
         }
 
         break;
@@ -1158,6 +1226,7 @@ void MainTask(void *pvParameters) {
         if (btn1.isHeld()) {
           buzFlag = 1;
           globalBuzTone = toneFrequencies[toneSelected];
+          oldToneSelected = toneSelected;
         } else {
           buzFlag = 0;
         }
@@ -1174,7 +1243,6 @@ void MainTask(void *pvParameters) {
         }
         break;
     }
-
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
@@ -1185,8 +1253,6 @@ void backToIdle(int saved_item_selected) {
   currentState = STATE_IDLE;
   encoder.setCount(saved_item_selected * 2);
 }
-
-
 
 void loop() {
 }
