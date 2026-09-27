@@ -5,7 +5,7 @@ const char* ssid = "NINE";
 const char* password = "ninenine";
 const char* apiUrl = "https://lectures-strategic-merchant-pottery.trycloudflare.com/messages";
 
-const char LETTERS_NUMBERS[36] = {
+const char LETTERS_NUMBERS[TOTAL_CHARECTERS] = {
   'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
   'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
   'U', 'V', 'W', 'X', 'Y', 'Z', '1', '2', '3', '4',
@@ -16,7 +16,7 @@ uint8_t broadcastAddress[] = {
   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
 };
 
-const String MORSE_CODE[36] = {
+const String MORSE_CODE[TOTAL_CHARECTERS] = {
   ".-",    // A
   "-...",  // B
   "-.-.",  // C
@@ -57,7 +57,7 @@ const String MORSE_CODE[36] = {
 
 char morseDecode(String seq) {
   char result = '?';
-  for(int i = 0; i < 36; i++) {
+  for(int i = 0; i < TOTAL_CHARECTERS; i++) {
     if (MORSE_CODE[i] == seq) {
       result = LETTERS_NUMBERS[i];
       break;

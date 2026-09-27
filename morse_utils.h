@@ -4,8 +4,10 @@
 #include <Arduino.h>
 #include <esp_now.h>
 
-extern const char LETTERS_NUMBERS[36];
-extern const String MORSE_CODE[36];
+#define TOTAL_CHARECTERS 36
+
+extern const char LETTERS_NUMBERS[TOTAL_CHARECTERS];
+extern const String MORSE_CODE[TOTAL_CHARECTERS];
 extern uint8_t broadcastAddress[6];
 extern const char* ssid;
 extern const char* password;

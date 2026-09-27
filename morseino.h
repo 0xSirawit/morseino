@@ -25,7 +25,26 @@
 #define PIN_BUZ 16
 #define PIN_SW1 26
 
-#define BUZTONE 1000
+#define NOTE_De 1000  // Default
+
+#define NOTE_C4  262  // Do
+#define NOTE_D4  294  // Re
+#define NOTE_E4  330  // Mi
+#define NOTE_F4  349  // Fa
+#define NOTE_G4  392  // Sol
+#define NOTE_A4  440  // La
+#define NOTE_B4  494  // Ti
+
+#define NOTE_C5  523  // Do
+#define NOTE_D5  587  // Re
+#define NOTE_E5  659  // Mi
+#define NOTE_F5  698  // Fa
+#define NOTE_G5  784  // Sol
+#define NOTE_A5  880  // La
+#define NOTE_B5  988  // Ti
+
+
+
 
 #define BUTTON_PRESSED LOW
 #define BUTTON_RELEASED HIGH
@@ -36,8 +55,48 @@ enum SystemState {
   STATE_PRACTICE,
   STATE_LOG,
   STATE_SETTING,
-  STATE_HELP
+  STATE_HELP,
+  
+  // In setting state
+  STATE_SETTING_DEVICENAME,
+  STATE_SETTING_UNITTIME,
+  STATE_SETTING_TONE
+  
 };
+
+extern volatile int globalBuzTone;
+extern volatile int toneSelected;
+extern volatile int toneSelectPrevious0;
+extern volatile int toneSelectPrevious1;
+extern volatile int toneSelectPrevious2;
+extern volatile int toneSelectNext2;
+extern volatile int toneSelectNext1;
+extern volatile int toneSelectNext0;
+extern const int toneFrequencies[NUM_TONE_ITEM];
+
+extern const SystemState stateSettingLookup[];
+extern volatile SystemState settingSelState;
+extern volatile int settingSelected;
+extern volatile int settingSelectPrevious;
+extern volatile int settingSelectNext;
+
+extern volatile float unitTime;
+
+extern volatile int letterSelected;
+extern volatile int letterSelectPrevious0;
+extern volatile int letterSelectPrevious1;
+extern volatile int letterSelectPrevious2;
+extern volatile int letterSelectNext2;
+extern volatile int letterSelectNext1;
+extern volatile int letterSelectNext0;
+
+extern volatile int numberSelected;
+extern volatile int numberSelectPrevious0;
+extern volatile int numberSelectPrevious1;
+extern volatile int numberSelectPrevious2;
+extern volatile int numberSelectNext2;
+extern volatile int numberSelectNext1;
+extern volatile int numberSelectNext0;
 
 extern const SystemState stateLookup[];
 extern volatile SystemState currentState;
