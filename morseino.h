@@ -9,6 +9,11 @@
 #include "debounce_button.h"
 #include "morse_utils.h"
 #include "oled_n_bitmaps.h"
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <HTTPClient.h>
+#include <RTClib.h>
 
 #define PIN_BT4 19
 #define PIN_BT1 18
@@ -125,5 +130,6 @@ void OLEDDisplayTask(void *pvParameters);
 void RotaryEncoderTask(void *pvParameters);
 void CommsTask(void *pvParameters);
 void MainTask(void *pvParameters);
+void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 
 #endif

@@ -26,10 +26,25 @@ volatile int practice_score = 0;
 
 volatile int positionLetter = 0;
 
-String globalSeqBuffer = "";
+volatile bool txFlushRequested = false;
+volatile TickType_t lastRxTick = 0;
+bool showRx = false;
+String currentRxChar = "";
+String globalTxBuffer = "";
+String globalRxBuffer = "";
 String globalMessageBuffer = "";
+String globalSeqBuffer = "";
+String globalRecieveSeqBuffer = "";
 SemaphoreHandle_t seqBufferMutex = NULL;
 SemaphoreHandle_t i2cMutex = NULL;
+
+String lastSentMessage = "";
+String lastRecvMessage = "";
+
+RTC_DS1307 rtc;
+
+String lastSentTime = "--:--";
+String lastRecvTime = "--:--";
 
 TaskHandle_t commsTaskHandle = NULL;
 TaskHandle_t practiceTaskHandle = NULL;
@@ -41,11 +56,11 @@ DebouncedButton btn3(PIN_BT3, BUTTON_PRESSED);
 DebouncedButton btn4(PIN_BT4, BUTTON_PRESSED);
 
 // LCD_ICONS
-byte SPEAKER[] = {B00001, B00011, B01111, B01111, B01111, B00011, B00001, B00000};
-byte MUTESPEAKER[] = {B00000 ,B10001, B01010, B00100, B01010, B10001, B00000, B00000};
-byte UNMUTESPEAKER[] = {B00100, B00010, B10001, B01001, B10001, B00010, B00100, B00000};
-byte LOCK[] = {B01110, B10001, B10001, B11111, B11011, B11011, B11111, B00000};
-byte UNLOCK[] = {B01110, B10000, B10000, B11111, B11011, B11011, B11111, B00000};
+byte SPEAKER[] = { B00001, B00011, B01111, B01111, B01111, B00011, B00001, B00000 };
+byte MUTESPEAKER[] = { B00000, B10001, B01010, B00100, B01010, B10001, B00000, B00000 };
+byte UNMUTESPEAKER[] = { B00100, B00010, B10001, B01001, B10001, B00010, B00100, B00000 };
+byte LOCK[] = { B01110, B10001, B10001, B11111, B11011, B11011, B11111, B00000 };
+byte UNLOCK[] = { B01110, B10000, B10000, B11111, B11011, B11011, B11111, B00000 };
 
 // OLED
 volatile int item_selected = 1;
@@ -89,6 +104,8 @@ volatile int help_line = 0;
 const SystemState stateLookup[] = {STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING, STATE_HELP};
 const SystemState stateSettingLookup[] = {STATE_SETTING_DEVICENAME, STATE_SETTING_UNITTIME, STATE_SETTING_TONE};
 
+String macAddress = "";
+
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 ESP32Encoder encoder;
 
@@ -98,6 +115,37 @@ void setup() {
 
   seqBufferMutex = xSemaphoreCreateMutex();
   i2cMutex = xSemaphoreCreateMutex();
+
+  // ESP Now
+  WiFi.mode(WIFI_STA);
+  macAddress = getMacAddress();
+  WiFi.begin(ssid, password);
+  if (!rtc.begin()) {
+    Serial.println("RTC not found");
+  } else if (!rtc.isrunning()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW Init Failed");
+    return;
+  }
+  esp_now_register_recv_cb(OnDataRecv);
+
+  esp_now_peer_info_t peerInfo = {};
+
+  memcpy(
+    peerInfo.peer_addr,
+    broadcastAddress,
+    6);
+
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add broadcast peer");
+    return;
+  }
 
   Wire.begin();
   u8g2.begin();
@@ -124,7 +172,7 @@ void setup() {
   xTaskCreate(DebugTask, "Debug_Task", 2048, NULL, 1, NULL);
 
   // Suspendable Tasks
-  xTaskCreate(CommsTask, "Comms_Task", 2048, NULL, 1, &commsTaskHandle);
+  xTaskCreate(CommsTask, "Comms_Task", 8192, NULL, 1, &commsTaskHandle);
   xTaskCreate(PracticeTask, "Practice_Task", 2048, NULL, 1, &practiceTaskHandle);
   vTaskSuspend(commsTaskHandle);
   vTaskSuspend(practiceTaskHandle);
@@ -136,6 +184,69 @@ long getPosition(int raw_position, int limit) {
     position += limit;
   }
   return position / 2;
+}
+
+void sendPost(String message) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("!WL_CONNECTED");
+    return;
+  }
+  Serial.print("apiUrl : ");
+  Serial.print(apiUrl);
+  HTTPClient http;
+  http.begin(apiUrl);
+  http.addHeader("Content-Type", "application/json");
+
+  String json = "{\"mac_address\":\"" + macAddress + "\",\"msg\":\"" + message + "\"}";
+  int code = http.POST(json);
+  if (code > 0) {
+    Serial.printf("\nPOST %d\n", code);
+    Serial.println(http.getString());
+  } else {
+    Serial.printf("\nPOST failed: %s\n", http.errorToString(code).c_str());
+  }
+  http.end();
+}
+
+void OnDataRecv(
+  const esp_now_recv_info_t *info,
+  const uint8_t *data,
+  int len) {
+  char receivedChar = (char)data[0];
+
+  if (receivedChar == '.') {
+    buzFlag = 1;
+    ledFlag = 1;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    buzFlag = 0;
+    ledFlag = 0;
+    globalRecieveSeqBuffer += receivedChar;
+  } else if (receivedChar == '-') {
+    buzFlag = 1;
+    ledFlag = 1;
+    vTaskDelay(pdMS_TO_TICKS(300));
+    buzFlag = 0;
+    ledFlag = 0;
+    globalRecieveSeqBuffer += receivedChar;
+  } else if (receivedChar == 'e') {
+    char decodeReciever = morseDecode(globalRecieveSeqBuffer);
+    globalRecieveSeqBuffer = "";
+    if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      if (!showRx) {
+        globalRxBuffer = "";
+        if (globalTxBuffer.length() > 0) {
+          txFlushRequested = true;
+        }
+      }
+      globalRxBuffer += decodeReciever;
+      currentRxChar = String(decodeReciever);
+      showRx = true;
+      lastRxTick = xTaskGetTickCount();
+      Serial.print("Recieve : ");
+      Serial.print(decodeReciever);
+      xSemaphoreGive(seqBufferMutex);
+    }
+  }
 }
 
 void RotaryEncoderTask(void *pvParameters) {
@@ -238,8 +349,7 @@ void BUZTask(void *pvParameters) {
     if (buzFlag && !lastBuzState && digitalRead(PIN_SW1)) {
       tone(PIN_BUZ, globalBuzTone);
       lastBuzState = true;
-    }
-    else if (!buzFlag && lastBuzState) {
+    } else if (!buzFlag && lastBuzState) {
       noTone(PIN_BUZ);
       lastBuzState = false;
     }
@@ -251,34 +361,60 @@ void BUZTask(void *pvParameters) {
 void OLEDDisplayTask(void *pvParameters) {
   for (;;) {
     u8g2.firstPage();
+    String sentText = "";
+    String recvText = "";
+    String sentTime = "";
+    String recvTime = "";
+    if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      sentText = lastSentMessage;
+      recvText = lastRecvMessage;
+      sentTime = lastSentTime;
+      recvTime = lastRecvTime;
+      xSemaphoreGive(seqBufferMutex);
+    }
     do {
       if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        char displayChar[2] = {LETTERS_NUMBERS[practice_challengingNum], '\0'};
+        char displayChar[2] = { LETTERS_NUMBERS[practice_challengingNum], '\0' };
         switch (currentState) {
           case STATE_IDLE:
-            u8g2.drawBitmap(0, 22, 128/8, 21, bitmap_item_sel_outline);
+            u8g2.drawBitmap(0, 22, 128 / 8, 21, bitmap_item_sel_outline);
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(25, 15, menu_items[item_sel_previous]);
-            u8g2.drawBitmap(4, 2, 16/8, 16, bitmap_icons[item_sel_previous]);
+            u8g2.drawBitmap(4, 2, 16 / 8, 16, bitmap_icons[item_sel_previous]);
 
             u8g2.setFont(u8g_font_7x14B);
-            u8g2.drawStr(25, 15+20+2, menu_items[item_selected]);
-            u8g2.drawBitmap(4, 24, 16/8, 16, bitmap_icons[item_selected]);
+            u8g2.drawStr(25, 15 + 20 + 2, menu_items[item_selected]);
+            u8g2.drawBitmap(4, 24, 16 / 8, 16, bitmap_icons[item_selected]);
 
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(25, 15+20+20+2+2, menu_items[item_sel_next]);
-            u8g2.drawBitmap(4, 46, 16/8, 16, bitmap_icons[item_sel_next]);
+            u8g2.drawStr(25, 15 + 20 + 20 + 2 + 2, menu_items[item_sel_next]);
+            u8g2.drawBitmap(4, 46, 16 / 8, 16, bitmap_icons[item_sel_next]);
 
-            u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
-            u8g2.drawBox(125, 64/NUM_ITEMS * item_selected, 3, 64/NUM_ITEMS);
+            u8g2.drawBitmap(128 - 8, 0, 8 / 8, 64, bitmap_scrollbar_background);
+            u8g2.drawBox(125, 64 / NUM_ITEMS * item_selected, 3, 64 / NUM_ITEMS);
+            break;
+
+          case STATE_NORMAL:
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(25, 15, "SIGNALING");
+            u8g2.drawBitmap(4, 2, 16 / 8, 16, bitmap_icon_signaling);
+
+            u8g2.setFont(u8g_font_6x12);
+            u8g2.drawStr(4, 36, "TX:");
+            u8g2.drawStr(24, 36, sentText.substring(max(0, (int)sentText.length() - 11)).c_str());
+            u8g2.drawStr(128 - 30 - 2, 36, sentTime.c_str());
+
+            u8g2.drawStr(4, 56, "RX:");
+            u8g2.drawStr(24, 56, recvText.substring(max(0, (int)recvText.length() - 11)).c_str());
+            u8g2.drawStr(128 - 30 - 2, 56, recvTime.c_str());
             break;
 
           case STATE_PRACTICE:
             u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(25, 15, "PRACTICE");
-            u8g2.drawBitmap(4, 2, 16/8, 16, bitmap_icon_practice);
+            u8g2.drawBitmap(4, 2, 16 / 8, 16, bitmap_icon_practice);
             u8g2.setFont(u8g_font_profont29);
-            
+
             u8g2.drawStr(58, 44, displayChar);
             u8g2.drawStr(4, 64, MORSE_CODE[practice_challengingNum].c_str());
             break;
@@ -286,13 +422,13 @@ void OLEDDisplayTask(void *pvParameters) {
           case STATE_HELP:
             u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(25, 15, "HELP");
-            u8g2.drawBitmap(4, 2, 16/8, 16, bitmap_icon_help);
-            u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
-            u8g2.drawBox(125, 64/(NUM_HELP_LINES - 2) * help_line, 3, 64/(NUM_HELP_LINES - 2));
-            
+            u8g2.drawBitmap(4, 2, 16 / 8, 16, bitmap_icon_help);
+            u8g2.drawBitmap(128 - 8, 0, 8 / 8, 64, bitmap_scrollbar_background);
+            u8g2.drawBox(125, 64 / (NUM_HELP_LINES - 2) * help_line, 3, 64 / (NUM_HELP_LINES - 2));
+
             u8g2.setFont(u8g_font_6x12);
             for (int i = 0; i < 3; i++) {
-              u8g2.drawStr(4, 30 + (15 * i), morsecode_cs[i+help_line]);
+              u8g2.drawStr(4, 30 + (15 * i), morsecode_cs[i + help_line]);
             }
             break;
 
@@ -482,7 +618,7 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.write(byte(0));
 
           lcd.setCursor(15, 0);
-          if (digitalRead(PIN_SW1)){
+          if (digitalRead(PIN_SW1)) {
             lcd.write(byte(4));
           } else {
             lcd.write(byte(1));
@@ -497,7 +633,11 @@ void LCDDisplayTask(void *pvParameters) {
 
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             displayBuffer = globalSeqBuffer;
-            messageDisplay = globalMessageBuffer;
+            if (showRx) {
+              messageDisplay = "RX : " + globalRxBuffer;
+            } else {
+              messageDisplay = "TX : " + globalTxBuffer;
+            }
             xSemaphoreGive(seqBufferMutex);
           }
 
@@ -539,7 +679,7 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.write(byte(0));
 
           lcd.setCursor(15, 0);
-          if (digitalRead(PIN_SW1)){
+          if (digitalRead(PIN_SW1)) {
             lcd.write(byte(4));
           } else {
             lcd.write(byte(1));
@@ -562,8 +702,18 @@ void LCDDisplayTask(void *pvParameters) {
             displayBuffer = displayBuffer.substring(0, 5);
           }
 
-          if (messageDisplay.length() > 16) {
-            messageDisplay = messageDisplay.substring(messageDisplay.length() - 16);
+          if (showRx) {
+            String rxText = globalRxBuffer;
+            if (rxText.length() > 11) {
+              rxText = rxText.substring(rxText.length() - 11);
+            }
+            messageDisplay = "RX : " + rxText;
+          } else {
+            String txText = globalTxBuffer;
+            if (txText.length() > 11) {
+              txText = txText.substring(txText.length() - 11);
+            }
+            messageDisplay = "TX : " + txText;
           }
 
           if (displayBuffer != lastDisplayBuffer) {
@@ -636,6 +786,19 @@ void LCDDisplayTask(void *pvParameters) {
   }
 }
 
+String rtcTimeString(uint32_t secondsAgo) {
+  String result = "--:--";
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    DateTime t = rtc.now() - TimeSpan(secondsAgo);
+    xSemaphoreGive(i2cMutex);
+
+    char buf[6];
+    snprintf(buf, sizeof(buf), "%02d:%02d", t.hour(), t.minute());
+    result = buf;
+  }
+  return result;
+}
+
 void CommsTask(void *pvParameters) {
   TickType_t pressStartTick = 0;
   TickType_t releaseStartTick = 0;
@@ -644,6 +807,25 @@ void CommsTask(void *pvParameters) {
 
   for (;;) {
     if (btn4.isHeld()) {
+
+      if (showRx) {
+        localSeqBuffer = "";
+        uint32_t ago = pdTICKS_TO_MS(xTaskGetTickCount() - lastRxTick) / 1000;
+        String recvTime = rtcTimeString(ago);
+        if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          lastRecvTime = recvTime;
+          lastRecvMessage = globalRxBuffer;
+          globalRxBuffer = "";
+          globalTxBuffer = "";
+          showRx = false;
+          xSemaphoreGive(seqBufferMutex);
+        }
+        while (btn4.isHeld()) {
+          vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        continue;
+      }
+
       buzFlag = 1;
       ledFlag = 1;
 
@@ -659,6 +841,8 @@ void CommsTask(void *pvParameters) {
 
       unsigned long duration = (releaseStartTick - pressStartTick) * portTICK_PERIOD_MS;
       char symbol = (duration < (unsigned long)(unitTime * 2.0)) ? '.' : '-';
+
+      broadcastChar(symbol);
 
       localSeqBuffer = localSeqBuffer + symbol;
 
@@ -679,17 +863,44 @@ void CommsTask(void *pvParameters) {
       if (localSeqBuffer.length() > 0) {
         if (((xTaskGetTickCount() - releaseStartTick) * portTICK_PERIOD_MS) > (unitTime * 2.5)) {
           char decodedChar = morseDecode(localSeqBuffer);
-
+          broadcastChar('e');
           Serial.print(" -> ");
           Serial.println(decodedChar);
-
           localSeqBuffer = "";
 
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             globalSeqBuffer = "";
-            globalMessageBuffer = globalMessageBuffer + decodedChar;
+            globalTxBuffer += decodedChar;
+            globalMessageBuffer += decodedChar;
             xSemaphoreGive(seqBufferMutex);
           }
+        }
+      } else if (globalTxBuffer.length() > 0 && (txFlushRequested || (xTaskGetTickCount() - releaseStartTick) > pdMS_TO_TICKS(10000))) {
+        String msg = "";
+        String sentTime = rtcTimeString(0);
+        if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          lastSentTime = sentTime;
+          msg = globalTxBuffer;
+          lastSentMessage = msg;
+          globalTxBuffer = "";
+          txFlushRequested = false;
+          xSemaphoreGive(seqBufferMutex);
+        }
+        if (msg.length() > 0) {
+          Serial.println("Message Send Post");
+          Serial.print("Mac Address : ");
+          Serial.print(macAddress);
+          sendPost(msg);
+        }
+      } else if (showRx && (xTaskGetTickCount() - lastRxTick) > pdMS_TO_TICKS(10000)) {
+        uint32_t ago = pdTICKS_TO_MS(xTaskGetTickCount() - lastRxTick) / 1000;
+        String recvTime = rtcTimeString(ago);
+        if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          lastRecvTime = recvTime;
+          lastRecvMessage = globalRxBuffer;
+          globalRxBuffer = "";
+          showRx = false;
+          xSemaphoreGive(seqBufferMutex);
         }
       }
       buzFlag = 0;
@@ -699,7 +910,7 @@ void CommsTask(void *pvParameters) {
   }
 }
 
-void PracticeTask (void *pvParameters) {
+void PracticeTask(void *pvParameters) {
   TickType_t pressStartTick = 0;
   TickType_t releaseStartTick = 0;
   SystemState lastState = (SystemState)-1;
@@ -776,6 +987,7 @@ void PracticeTask (void *pvParameters) {
 
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             globalSeqBuffer = "";
+            globalTxBuffer += decodedChar;
             globalMessageBuffer = globalMessageBuffer + decodedChar;
             xSemaphoreGive(seqBufferMutex);
           }
@@ -803,11 +1015,12 @@ void MainTask(void *pvParameters) {
       if (currentState == STATE_PRACTICE || currentState == STATE_NORMAL) {
         if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
           globalSeqBuffer = "";
+          globalTxBuffer = "";
           globalMessageBuffer = "";
           xSemaphoreGive(seqBufferMutex);
         }
       }
-     
+
       lastState = currentState;
     }
 
@@ -941,6 +1154,8 @@ void backToIdle(int saved_item_selected) {
   currentState = STATE_IDLE;
   encoder.setCount(saved_item_selected * 2);
 }
+
+
 
 void loop() {
 }
