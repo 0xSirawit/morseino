@@ -3,7 +3,7 @@
 
 const char* ssid = "NINE";
 const char* password = "ninenine";
-const char* apiUrl = "https://system-equally-oclc-eur.trycloudflare.com";
+const char* apiUrl = "https://api.morseino.workboard.live";
 
 const char LETTERS_NUMBERS[TOTAL_CHARECTERS] = {
   'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
