@@ -1145,6 +1145,10 @@ void MainTask(void *pvParameters) {
           practice_score = 0;
         }
 
+        if (btn3.wasPressed()) {
+          globalMessageBuffer = "";
+        }
+
         if (btn2.wasPressed()) {
           backToIdle(saved_item_selected);
           vTaskSuspend(practiceTaskHandle);
