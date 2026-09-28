@@ -5,11 +5,12 @@ String unitTimeBuffer = "100";
 volatile float globalUnitTime = 100.0;
 
 const int toneFrequencies[NUM_TONE_ITEM] = {
-  NOTE_De,
-  NOTE_C4, NOTE_D4, NOTE_E4, NOTE_F4, NOTE_G4, NOTE_A4, NOTE_B4,
+  NOTE_De, NOTE_C4, NOTE_D4, NOTE_E4, NOTE_F4, NOTE_G4, NOTE_A4, NOTE_B4,
   NOTE_C5, NOTE_D5, NOTE_E5, NOTE_F5, NOTE_G5, NOTE_A5, NOTE_B5
 };
-volatile int globalBuzTone = toneFrequencies[0]; 
+
+volatile int globalBuzTone = toneFrequencies[0];
+volatile int oldToneSelected = 0;
 
 volatile SystemState currentState = STATE_IDLE;
 volatile SystemState selState = STATE_IDLE;
@@ -34,9 +35,10 @@ String globalTxBuffer = "";
 String globalRxBuffer = "";
 String globalMessageBuffer = "";
 String globalSeqBuffer = "";
-String globalRecieveSeqBuffer = "";
+
 SemaphoreHandle_t seqBufferMutex = NULL;
 SemaphoreHandle_t i2cMutex = NULL;
+QueueHandle_t rxSoundQueue = NULL;
 
 String lastSentMessage = "";
 String lastRecvMessage = "";
@@ -48,6 +50,7 @@ String lastRecvTime = "--:--";
 
 TaskHandle_t commsTaskHandle = NULL;
 TaskHandle_t practiceTaskHandle = NULL;
+TaskHandle_t rxsoundTaskHandle = NULL;
 
 // Buttons
 DebouncedButton btn1(PIN_BT1, BUTTON_PRESSED);
@@ -81,7 +84,7 @@ volatile int letterSelectNext2 = 4;
 volatile int letterSelectNext1 = 5;
 volatile int letterSelectNext0 = 6;
 
-// Display Select Number 
+// Display Select Number
 volatile int numberSelected = 3;
 volatile int numberSelectPrevious0 = 0;
 volatile int numberSelectPrevious1 = 1;
@@ -101,8 +104,8 @@ volatile int toneSelectNext0 = 6;
 
 volatile int help_line = 0;
 
-const SystemState stateLookup[] = {STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING, STATE_HELP};
-const SystemState stateSettingLookup[] = {STATE_SETTING_DEVICENAME, STATE_SETTING_UNITTIME, STATE_SETTING_TONE};
+const SystemState stateLookup[] = { STATE_NORMAL, STATE_PRACTICE, STATE_LOG, STATE_SETTING, STATE_HELP };
+const SystemState stateSettingLookup[] = { STATE_SETTING_DEVICENAME, STATE_SETTING_UNITTIME, STATE_SETTING_TONE };
 
 String macAddress = "";
 
@@ -115,11 +118,30 @@ void setup() {
 
   seqBufferMutex = xSemaphoreCreateMutex();
   i2cMutex = xSemaphoreCreateMutex();
+  rxSoundQueue = xQueueCreate(64, sizeof(char));
 
-  // ESP Now
   WiFi.mode(WIFI_STA);
   macAddress = getMacAddress();
+  WiFi.setSleep(false);
   WiFi.begin(ssid, password);
+
+  unsigned long wifiStart = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 8000) {
+    delay(100);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+
+    esp_err_t chErr = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    if (chErr != ESP_OK) {
+      Serial.printf("set_channel failed: %s\n", esp_err_to_name(chErr));
+    }
+  }
+
+  Serial.printf("WiFi: %s, channel: %d\n", WiFi.status() == WL_CONNECTED ? "connected" : "offline", WiFi.channel());
+
   if (!rtc.begin()) {
     Serial.println("RTC not found");
   } else if (!rtc.isrunning()) {
@@ -134,10 +156,7 @@ void setup() {
 
   esp_now_peer_info_t peerInfo = {};
 
-  memcpy(
-    peerInfo.peer_addr,
-    broadcastAddress,
-    6);
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
 
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
@@ -168,14 +187,16 @@ void setup() {
   xTaskCreate(LCDDisplayTask, "LCDDisplay_Task", 2048, NULL, 1, NULL);
   xTaskCreate(OLEDDisplayTask, "OLEDDisplay_Task", 8192, NULL, 1, NULL);
   xTaskCreate(RotaryEncoderTask, "RotaryEncoder_Task", 2048, NULL, 1, NULL);
-  xTaskCreate(MainTask, "Main_Task", 2048, NULL, 1, NULL);
+  xTaskCreate(MainTask, "Main_Task", 8192, NULL, 1, NULL);
   xTaskCreate(DebugTask, "Debug_Task", 2048, NULL, 1, NULL);
 
   // Suspendable Tasks
   xTaskCreate(CommsTask, "Comms_Task", 8192, NULL, 1, &commsTaskHandle);
+  xTaskCreate(RxSoundTask, "RxSound_Task", 2048, NULL, 1, &rxsoundTaskHandle);
   xTaskCreate(PracticeTask, "Practice_Task", 2048, NULL, 1, &practiceTaskHandle);
   vTaskSuspend(commsTaskHandle);
   vTaskSuspend(practiceTaskHandle);
+  vTaskSuspend(rxsoundTaskHandle);
 }
 
 long getPosition(int raw_position, int limit) {
@@ -194,7 +215,7 @@ void sendPost(String message) {
   Serial.print("apiUrl : ");
   Serial.print(apiUrl);
   HTTPClient http;
-  http.begin(apiUrl);
+  http.begin(String(apiUrl)+"/messages");
   http.addHeader("Content-Type", "application/json");
 
   String json = "{\"mac_address\":\"" + macAddress + "\",\"msg\":\"" + message + "\"}";
@@ -208,30 +229,47 @@ void sendPost(String message) {
   http.end();
 }
 
+void updateDeviceName(String deviceName) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("!WL_CONNECTED");
+    return;
+  }
+  HTTPClient http;
+  http.begin(String(apiUrl)+"/devices/name");
+  http.addHeader("Content-Type", "application/json");
+  String json = "{\"mac_address\":\"" + macAddress + "\",\"device_name\":\"" + deviceName + "\"}";
+  int code = http.POST(json);
+  if (code > 0) {
+    Serial.printf("\nPOST %d\n", code);
+    Serial.println(http.getString());
+  } else {
+    Serial.printf("\nPOST failed: %s\n", http.errorToString(code).c_str());
+  }
+}
+
 void OnDataRecv(
   const esp_now_recv_info_t *info,
   const uint8_t *data,
   int len) {
-  char receivedChar = (char)data[0];
+  String receivedSeq = "";
+  for (int i = 0; i < len; i++) {
+    char sym = (char)data[i];
+    if (sym != '.' && sym != '-') {
+      return;
+    }
+    receivedSeq += sym;
+  }
 
-  if (receivedChar == '.') {
-    buzFlag = 1;
-    ledFlag = 1;
-    vTaskDelay(pdMS_TO_TICKS(100));
-    buzFlag = 0;
-    ledFlag = 0;
-    globalRecieveSeqBuffer += receivedChar;
-  } else if (receivedChar == '-') {
-    buzFlag = 1;
-    ledFlag = 1;
-    vTaskDelay(pdMS_TO_TICKS(300));
-    buzFlag = 0;
-    ledFlag = 0;
-    globalRecieveSeqBuffer += receivedChar;
-  } else if (receivedChar == 'e') {
-    char decodeReciever = morseDecode(globalRecieveSeqBuffer);
-    globalRecieveSeqBuffer = "";
-    if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+  if (receivedSeq.length() > 0) {
+    for (int i = 0; i < receivedSeq.length(); i++) {
+      char sym = receivedSeq[i];
+      xQueueSend(rxSoundQueue, &sym, 0);
+    }
+    char gap = ' ';
+    xQueueSend(rxSoundQueue, &gap, 0);
+
+    char decodeReciever = caesarShift(morseDecode(receivedSeq), TOTAL_CHARECTERS - caesarKey);
+    if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
       if (!showRx) {
         globalRxBuffer = "";
         if (globalTxBuffer.length() > 0) {
@@ -245,17 +283,20 @@ void OnDataRecv(
       Serial.print("Recieve : ");
       Serial.print(decodeReciever);
       xSemaphoreGive(seqBufferMutex);
+    } else {
+      Serial.print("Recieve dropped (mutex busy) : ");
+      Serial.println(decodeReciever);
     }
   }
 }
 
 void RotaryEncoderTask(void *pvParameters) {
   long position;
-  int NUM_OP = NUM_ITEMS*2;
-  int NUM_OPSET = NUM_SETTING_ITEM*2;
-  int NUM_OPCHARS = NUM_LETTER_ITEM*2;
-  int NUM_OPNUMBER_ITEM = NUM_NUMBER_ITEM*2;
-  int NUM_OPTONE_ITEM = NUM_TONE_ITEM*2;
+  int NUM_OP = NUM_ITEMS * 2;
+  int NUM_OPSET = NUM_SETTING_ITEM * 2;
+  int NUM_OPCHARS = NUM_LETTER_ITEM * 2;
+  int NUM_OPNUMBER_ITEM = NUM_NUMBER_ITEM * 2;
+  int NUM_OPTONE_ITEM = NUM_TONE_ITEM * 2;
 
   for (;;) {
     int64_t raw_position = encoder.getCount();
@@ -282,45 +323,44 @@ void RotaryEncoderTask(void *pvParameters) {
         settingSelected = getPosition(raw_position, NUM_OPSET);
         settingSelectPrevious = (settingSelected + (NUM_SETTING_ITEM - 1)) % NUM_SETTING_ITEM;
         settingSelectNext = (settingSelected + 1) % NUM_SETTING_ITEM;
-        
+
         settingSelState = stateSettingLookup[settingSelected];
         break;
 
       case STATE_SETTING_DEVICENAME:
         letterSelected = getPosition(raw_position, NUM_OPCHARS);
-        letterSelectPrevious0 = (letterSelected + (NUM_LETTER_ITEM -3)) % NUM_LETTER_ITEM;
-        letterSelectPrevious1 = (letterSelected + (NUM_LETTER_ITEM -2)) % NUM_LETTER_ITEM;
-        letterSelectPrevious2 = (letterSelected + (NUM_LETTER_ITEM -1)) % NUM_LETTER_ITEM;
-        letterSelectNext2 = (letterSelected + (NUM_LETTER_ITEM +1)) % NUM_LETTER_ITEM;
-        letterSelectNext1 = (letterSelected + (NUM_LETTER_ITEM +2)) % NUM_LETTER_ITEM;
-        letterSelectNext0 = (letterSelected +(NUM_LETTER_ITEM +3)) % NUM_LETTER_ITEM;
+        letterSelectPrevious0 = (letterSelected + (NUM_LETTER_ITEM - 3)) % NUM_LETTER_ITEM;
+        letterSelectPrevious1 = (letterSelected + (NUM_LETTER_ITEM - 2)) % NUM_LETTER_ITEM;
+        letterSelectPrevious2 = (letterSelected + (NUM_LETTER_ITEM - 1)) % NUM_LETTER_ITEM;
+        letterSelectNext2 = (letterSelected + (NUM_LETTER_ITEM + 1)) % NUM_LETTER_ITEM;
+        letterSelectNext1 = (letterSelected + (NUM_LETTER_ITEM + 2)) % NUM_LETTER_ITEM;
+        letterSelectNext0 = (letterSelected + (NUM_LETTER_ITEM + 3)) % NUM_LETTER_ITEM;
         break;
-      
+
       case STATE_SETTING_UNITTIME:
-        numberSelected =  getPosition(raw_position, NUM_OPNUMBER_ITEM);
-        numberSelectPrevious0 = (numberSelected + (NUM_NUMBER_ITEM -3)) % NUM_NUMBER_ITEM;
-        numberSelectPrevious1 = (numberSelected + (NUM_NUMBER_ITEM -2)) % NUM_NUMBER_ITEM;
-        numberSelectPrevious2 = (numberSelected + (NUM_NUMBER_ITEM -1)) % NUM_NUMBER_ITEM;
-        numberSelectNext2 = (numberSelected + (NUM_NUMBER_ITEM +1)) % NUM_NUMBER_ITEM;
-        numberSelectNext1 = (numberSelected + (NUM_NUMBER_ITEM +2)) % NUM_NUMBER_ITEM;
-        numberSelectNext0 = (numberSelected +(NUM_NUMBER_ITEM +3)) % NUM_NUMBER_ITEM;
+        numberSelected = getPosition(raw_position, NUM_OPNUMBER_ITEM);
+        numberSelectPrevious0 = (numberSelected + (NUM_NUMBER_ITEM - 3)) % NUM_NUMBER_ITEM;
+        numberSelectPrevious1 = (numberSelected + (NUM_NUMBER_ITEM - 2)) % NUM_NUMBER_ITEM;
+        numberSelectPrevious2 = (numberSelected + (NUM_NUMBER_ITEM - 1)) % NUM_NUMBER_ITEM;
+        numberSelectNext2 = (numberSelected + (NUM_NUMBER_ITEM + 1)) % NUM_NUMBER_ITEM;
+        numberSelectNext1 = (numberSelected + (NUM_NUMBER_ITEM + 2)) % NUM_NUMBER_ITEM;
+        numberSelectNext0 = (numberSelected + (NUM_NUMBER_ITEM + 3)) % NUM_NUMBER_ITEM;
         break;
 
       case STATE_SETTING_TONE:
         toneSelected = getPosition(raw_position, NUM_OPTONE_ITEM);
-        toneSelectPrevious0 = (toneSelected + (NUM_TONE_ITEM -3)) % NUM_TONE_ITEM;
-        toneSelectPrevious1 = (toneSelected + (NUM_TONE_ITEM -2)) % NUM_TONE_ITEM;
-        toneSelectPrevious2 = (toneSelected + (NUM_TONE_ITEM -1)) % NUM_TONE_ITEM;
-        toneSelectNext2 = (toneSelected + (NUM_TONE_ITEM +1)) % NUM_TONE_ITEM;
-        toneSelectNext1 = (toneSelected + (NUM_TONE_ITEM +2)) % NUM_TONE_ITEM;
-        toneSelectNext0 = (toneSelected +(NUM_TONE_ITEM +3)) % NUM_TONE_ITEM;        
+        toneSelectPrevious0 = (toneSelected + (NUM_TONE_ITEM - 3)) % NUM_TONE_ITEM;
+        toneSelectPrevious1 = (toneSelected + (NUM_TONE_ITEM - 2)) % NUM_TONE_ITEM;
+        toneSelectPrevious2 = (toneSelected + (NUM_TONE_ITEM - 1)) % NUM_TONE_ITEM;
+        toneSelectNext2 = (toneSelected + (NUM_TONE_ITEM + 1)) % NUM_TONE_ITEM;
+        toneSelectNext1 = (toneSelected + (NUM_TONE_ITEM + 2)) % NUM_TONE_ITEM;
+        toneSelectNext0 = (toneSelected + (NUM_TONE_ITEM + 3)) % NUM_TONE_ITEM;
         break;
 
       case STATE_HELP:
         help_line = getPosition(raw_position, (NUM_HELP_LINES - 2) * 2);
         break;
     }
-
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
@@ -358,13 +398,33 @@ void BUZTask(void *pvParameters) {
   }
 }
 
-void OLEDDisplayTask(void *pvParameters) {
+void RxSoundTask(void *pvParameters) {
+  char sym;
   for (;;) {
-    u8g2.firstPage();
-    String sentText = "";
-    String recvText = "";
-    String sentTime = "";
-    String recvTime = "";
+    if (xQueueReceive(rxSoundQueue, &sym, portMAX_DELAY) == pdTRUE) {
+      float unit = globalUnitTime;
+      if (sym == ' ') {
+        vTaskDelay(pdMS_TO_TICKS(unit * 2));
+        continue;
+      }
+      buzFlag = 1;
+      ledFlag = 1;
+      vTaskDelay(pdMS_TO_TICKS(sym == '-' ? unit * 3 : unit));
+      buzFlag = 0;
+      ledFlag = 0;
+      vTaskDelay(pdMS_TO_TICKS(unit));
+    }
+  }
+}
+
+void OLEDDisplayTask(void *pvParameters) {
+  String sentText = "";
+  String recvText = "";
+  String sentTime = "";
+  String recvTime = "";
+  String nowText = "";
+
+  for (;;) {
     if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
       sentText = lastSentMessage;
       recvText = lastRecvMessage;
@@ -372,6 +432,12 @@ void OLEDDisplayTask(void *pvParameters) {
       recvTime = lastRecvTime;
       xSemaphoreGive(seqBufferMutex);
     }
+
+    if (currentState == STATE_NORMAL) {
+      nowText = "Time: " + rtcDateTimeString();
+    }
+
+    u8g2.firstPage();
     do {
       if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         char displayChar[2] = { LETTERS_NUMBERS[practice_challengingNum], '\0' };
@@ -400,13 +466,16 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawBitmap(4, 2, 16 / 8, 16, bitmap_icon_signaling);
 
             u8g2.setFont(u8g_font_6x12);
-            u8g2.drawStr(4, 36, "TX:");
-            u8g2.drawStr(24, 36, sentText.substring(max(0, (int)sentText.length() - 11)).c_str());
-            u8g2.drawStr(128 - 30 - 2, 36, sentTime.c_str());
+            u8g2.drawStr(4, 32, "TX:");
+            u8g2.drawStr(24, 32, sentText.substring(max(0, (int)sentText.length() - 11)).c_str());
+            u8g2.drawStr(128 - 30 - 2, 32, sentTime.c_str());
 
-            u8g2.drawStr(4, 56, "RX:");
-            u8g2.drawStr(24, 56, recvText.substring(max(0, (int)recvText.length() - 11)).c_str());
-            u8g2.drawStr(128 - 30 - 2, 56, recvTime.c_str());
+            u8g2.drawStr(4, 44, "RX:");
+            u8g2.drawStr(24, 44, recvText.substring(max(0, (int)recvText.length() - 11)).c_str());
+            u8g2.drawStr(128 - 30 - 2, 44, recvTime.c_str());
+
+            u8g2.setFont(u8g2_font_5x8_tr);
+            u8g2.drawStr(4, 60, nowText.c_str());
             break;
 
           case STATE_PRACTICE:
@@ -417,6 +486,10 @@ void OLEDDisplayTask(void *pvParameters) {
 
             u8g2.drawStr(58, 44, displayChar);
             u8g2.drawStr(4, 64, MORSE_CODE[practice_challengingNum].c_str());
+            break;
+          
+          case STATE_LOG:
+            u8g2.drawBitmap(0, 0, 128/8, 64, bitmap_qrcode_web);
             break;
 
           case STATE_HELP:
@@ -433,30 +506,30 @@ void OLEDDisplayTask(void *pvParameters) {
             break;
 
           case STATE_SETTING:
-            u8g2.drawBitmap(0, 22, 128/8, 21, bitmapSettingSelOutline);
+            u8g2.drawBitmap(0, 22, 128 / 8, 21, bitmapSettingSelOutline);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(25, 15, settingItems[settingSelectPrevious]);
-            u8g2.drawBitmap(4, 2, 16/8, 16, settingmapIncons[settingSelectPrevious]);
+            u8g2.drawBitmap(4, 2, 16 / 8, 16, settingmapIncons[settingSelectPrevious]);
 
             u8g2.setFont(u8g_font_7x14B);
-            u8g2.drawStr(25, 15+20+2, settingItems[settingSelected]);
-            u8g2.drawBitmap(4, 24, 16/8, 16, settingmapIncons[settingSelected]);
+            u8g2.drawStr(25, 15 + 20 + 2, settingItems[settingSelected]);
+            u8g2.drawBitmap(4, 24, 16 / 8, 16, settingmapIncons[settingSelected]);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(25, 59, settingItems[settingSelectNext]);
-            u8g2.drawBitmap(4, 46, 16/8, 16, settingmapIncons[settingSelectNext]);
+            u8g2.drawBitmap(4, 46, 16 / 8, 16, settingmapIncons[settingSelectNext]);
 
-            u8g2.drawBitmap(128-8, 0, 8/8, 64, bitmap_scrollbar_background);
-            u8g2.drawBox(125, 64/NUM_SETTING_ITEM * settingSelected, 3, 64/NUM_SETTING_ITEM);
+            u8g2.drawBitmap(128 - 8, 0, 8 / 8, 64, bitmap_scrollbar_background);
+            u8g2.drawBox(125, 64 / NUM_SETTING_ITEM * settingSelected, 3, 64 / NUM_SETTING_ITEM);
             break;
 
           case STATE_SETTING_DEVICENAME:
-            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(20, 14, "SET NAME DEVICE");
-            u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[0]);
+            u8g2.drawBitmap(2, 1, 16 / 8, 16, settingmapIncons[0]);
 
-            u8g2.drawBitmap(57, 23, 2, 20, bitmapLetterSelOutline);
+            u8g2.drawBitmap(56, 24, 2, 20, bitmapLetterSelOutline);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(9, 39, letterItems[letterSelectPrevious0]);
@@ -469,26 +542,24 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.drawStr(60, 39, letterItems[letterSelected]);
 
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60+ 7 +10, 39, letterItems[letterSelectNext2]);
+            u8g2.drawStr(60 + 7 + 10, 39, letterItems[letterSelectNext2]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7+10 +7 ,39, letterItems[letterSelectNext1]);
+            u8g2.drawStr(60 + 10 + 7 + 10 + 7, 39, letterItems[letterSelectNext1]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7 +10+7+10 +7, 39, letterItems[letterSelectNext0]);
+            u8g2.drawStr(60 + 10 + 7 + 10 + 7 + 10 + 7, 39, letterItems[letterSelectNext0]);
 
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(2, 62,"NAME:");
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(40, 62,nameDevice.c_str());
-
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(2, 62, "NAME:");
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(40, 62, nameDevice.c_str());
             break;
 
           case STATE_SETTING_UNITTIME:
-
-            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(20, 14, "SET UNIT TIME");
-            u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[1]);
+            u8g2.drawBitmap(2, 1, 16 / 8, 16, settingmapIncons[1]);
 
-            u8g2.drawBitmap(57, 23, 2, 20, bitmapLetterSelOutline);
+            u8g2.drawBitmap(56, 24, 2, 20, bitmapLetterSelOutline);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(9, 39, numberItems[numberSelectPrevious0]);
@@ -500,29 +571,28 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(60, 39, numberItems[numberSelected]);
 
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(60 + 10 + 7, 39, numberItems[numberSelectNext2]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(60 + 10 + 7 + 10 + 7, 39, numberItems[numberSelectNext1]);
+            u8g2.setFont(u8g_font_7x14);
+            u8g2.drawStr(60 + 10 + 7 + 10 + 7 + 10 + 7, 39, numberItems[numberSelectNext0]);
+
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(2, 62, "VALUE:");
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(47, 62, unitTimeBuffer.c_str());
 
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7, 39, numberItems[numberSelectNext2]);
-            u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7+10 +7 ,39, numberItems[numberSelectNext1]);
-            u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(60 +10+7 +10+7+10 +7, 39, numberItems[numberSelectNext0]);
-
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(2, 62,"VALUE:");
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(47, 62,unitTimeBuffer.c_str());
-
-            u8g2.setFont(u8g_font_7x14); 
-            u8g2.drawStr(103, 62,"ms");
+            u8g2.drawStr(103, 62, "ms");
             break;
 
           case STATE_SETTING_TONE:
-            u8g2.setFont(u8g_font_7x14B); 
+            u8g2.setFont(u8g_font_7x14B);
             u8g2.drawStr(20, 14, "SET BUZZ TONE");
-            u8g2.drawBitmap(2, 1, 16/8, 16, settingmapIncons[2]);
+            u8g2.drawBitmap(2, 1, 16 / 8, 16, settingmapIncons[2]);
 
-            u8g2.drawBitmap(53, 23, 3, 20, bitmapToneSelOutline);
+            u8g2.drawBitmap(53, 24, 3, 20, bitmapToneSelOutline);
 
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(1, 39, toneItems[toneSelectPrevious0]);
@@ -537,15 +607,14 @@ void OLEDDisplayTask(void *pvParameters) {
             u8g2.setFont(u8g_font_7x14);
             u8g2.drawStr(77, 39, toneItems[toneSelectNext2]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(95,39, toneItems[toneSelectNext1]);
+            u8g2.drawStr(95, 39, toneItems[toneSelectNext1]);
             u8g2.setFont(u8g_font_7x14);
-            u8g2.drawStr(113 ,39, toneItems[toneSelectNext0]);
+            u8g2.drawStr(113, 39, toneItems[toneSelectNext0]);
 
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(2, 62,"NOTE:");
-            u8g2.setFont(u8g_font_7x14B); 
-            u8g2.drawStr(40, 62,nameToneItems[toneSelected]);
-
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(2, 62, "NOTE:");
+            u8g2.setFont(u8g_font_7x14B);
+            u8g2.drawStr(40, 62, nameToneItems[oldToneSelected]);
             break;
         }
         xSemaphoreGive(i2cMutex);
@@ -567,18 +636,18 @@ void LCDDisplayTask(void *pvParameters) {
 
   LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-  xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50));
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    lcd.init();
+    lcd.backlight();
 
-  lcd.init();
-  lcd.backlight();
+    lcd.createChar(0, SPEAKER);
+    lcd.createChar(1, MUTESPEAKER);
+    lcd.createChar(4, UNMUTESPEAKER);
+    lcd.createChar(2, LOCK);
+    lcd.createChar(3, UNLOCK);
 
-  lcd.createChar(0, SPEAKER);
-  lcd.createChar(1, MUTESPEAKER);
-  lcd.createChar(4, UNMUTESPEAKER);
-  lcd.createChar(2, LOCK);
-  lcd.createChar(3, UNLOCK);
-
-  xSemaphoreGive(i2cMutex);
+    xSemaphoreGive(i2cMutex);
+  }
 
   for (;;) {
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -634,9 +703,9 @@ void LCDDisplayTask(void *pvParameters) {
           if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             displayBuffer = globalSeqBuffer;
             if (showRx) {
-              messageDisplay = "RX : " + globalRxBuffer;
+              messageDisplay = "RX: " + globalRxBuffer;
             } else {
-              messageDisplay = "TX : " + globalTxBuffer;
+              messageDisplay = "TX: " + globalTxBuffer;
             }
             xSemaphoreGive(seqBufferMutex);
           }
@@ -702,18 +771,8 @@ void LCDDisplayTask(void *pvParameters) {
             displayBuffer = displayBuffer.substring(0, 5);
           }
 
-          if (showRx) {
-            String rxText = globalRxBuffer;
-            if (rxText.length() > 11) {
-              rxText = rxText.substring(rxText.length() - 11);
-            }
-            messageDisplay = "RX : " + rxText;
-          } else {
-            String txText = globalTxBuffer;
-            if (txText.length() > 11) {
-              txText = txText.substring(txText.length() - 11);
-            }
-            messageDisplay = "TX : " + txText;
+          if (messageDisplay.length() > 16) {
+            messageDisplay = messageDisplay.substring(messageDisplay.length() - 16);
           }
 
           if (displayBuffer != lastDisplayBuffer) {
@@ -732,43 +791,47 @@ void LCDDisplayTask(void *pvParameters) {
             lastMessageDisplay = messageDisplay;
           }
           break;
-          
+
         case STATE_LOG:
+          lcd.setCursor(0, 0);
+          lcd.print("SCAN THE QRCODE");
+          lcd.setCursor(0, 1);
+          lcd.print("TO VIEW LOGS.");
           break;
 
         case STATE_SETTING:
-          lcd.setCursor(0,0);
+          lcd.setCursor(0, 0);
           lcd.print("NAME: ");
           lcd.print(nameDevice);
-          
-          lcd.setCursor(0,1);
+
+          lcd.setCursor(0, 1);
           lcd.print("UNIT: ");
           lcd.print(globalUnitTime);
-          lcd.setCursor(14,1);
+          lcd.setCursor(14, 1);
           lcd.print("ms");
           break;
 
         case STATE_SETTING_DEVICENAME:
-          lcd.setCursor(0,0);
+          lcd.setCursor(0, 0);
           lcd.print("SW1:SEL SW2:BACK");
-          lcd.setCursor(0,1);
+          lcd.setCursor(0, 1);
           lcd.print("SW3:DELETE");
           break;
 
         case STATE_SETTING_UNITTIME:
-          lcd.setCursor(0,0);
+          lcd.setCursor(0, 0);
           lcd.print("SW1:SEL SW2:BACK");
-          lcd.setCursor(0,1);
+          lcd.setCursor(0, 1);
           lcd.print("SW3:DELETE");
           break;
 
         case STATE_SETTING_TONE:
-          lcd.setCursor(0,0);
+          lcd.setCursor(0, 0);
           lcd.print("SW1:SEL SW2:BACK");
-          lcd.setCursor(0,1);
+          lcd.setCursor(0, 1);
           lcd.print("FREQ:");
           lcd.print(globalBuzTone);
-          lcd.print("Hz");
+          lcd.print("Hz ");
           break;
 
         case STATE_HELP:
@@ -778,10 +841,8 @@ void LCDDisplayTask(void *pvParameters) {
           lcd.print("SW3:SAVELOG");
           break;
       }
-
       xSemaphoreGive(i2cMutex);
     }
-
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -799,6 +860,19 @@ String rtcTimeString(uint32_t secondsAgo) {
   return result;
 }
 
+String rtcDateTimeString() {
+  String result = "--:-- --/--/----";
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    DateTime t = rtc.now();
+    xSemaphoreGive(i2cMutex);
+
+    char buf[17];
+    snprintf(buf, sizeof(buf), "%02d:%02d %02d/%02d/%04d", t.hour(), t.minute(), t.day(), t.month(), t.year());
+    result = buf;
+  }
+  return result;
+}
+
 void CommsTask(void *pvParameters) {
   TickType_t pressStartTick = 0;
   TickType_t releaseStartTick = 0;
@@ -807,7 +881,6 @@ void CommsTask(void *pvParameters) {
 
   for (;;) {
     if (btn4.isHeld()) {
-
       if (showRx) {
         localSeqBuffer = "";
         uint32_t ago = pdTICKS_TO_MS(xTaskGetTickCount() - lastRxTick) / 1000;
@@ -842,8 +915,6 @@ void CommsTask(void *pvParameters) {
       unsigned long duration = (releaseStartTick - pressStartTick) * portTICK_PERIOD_MS;
       char symbol = (duration < (unsigned long)(unitTime * 2.0)) ? '.' : '-';
 
-      broadcastChar(symbol);
-
       localSeqBuffer = localSeqBuffer + symbol;
 
       if (xSemaphoreTake(seqBufferMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -863,7 +934,19 @@ void CommsTask(void *pvParameters) {
       if (localSeqBuffer.length() > 0) {
         if (((xTaskGetTickCount() - releaseStartTick) * portTICK_PERIOD_MS) > (unitTime * 2.5)) {
           char decodedChar = morseDecode(localSeqBuffer);
-          broadcastChar('e');
+          char encryptedChar = caesarShift(decodedChar, caesarKey);
+          int idx = -1;
+          for (int i = 0; i < TOTAL_CHARECTERS; i++) {
+            if (LETTERS_NUMBERS[i] == encryptedChar) {
+              idx = i;
+              break;
+            }
+          }
+
+          if (idx >= 0) {
+            broadcastMorse(MORSE_CODE[idx]);
+          }
+
           Serial.print(" -> ");
           Serial.println(decodedChar);
           localSeqBuffer = "";
@@ -903,8 +986,6 @@ void CommsTask(void *pvParameters) {
           xSemaphoreGive(seqBufferMutex);
         }
       }
-      buzFlag = 0;
-      ledFlag = 0;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -1031,6 +1112,7 @@ void MainTask(void *pvParameters) {
 
           if (selState == STATE_NORMAL) {
             vTaskResume(commsTaskHandle);
+            vTaskResume(rxsoundTaskHandle);
           } else if (selState == STATE_PRACTICE) {
             practice_challengingNum = random(36);
             practice_JustResumed = 1;
@@ -1047,6 +1129,7 @@ void MainTask(void *pvParameters) {
         if (btn2.wasPressed()) {
           backToIdle(saved_item_selected);
           vTaskSuspend(commsTaskHandle);
+          vTaskSuspend(rxsoundTaskHandle);
         }
         break;
 
@@ -1062,13 +1145,20 @@ void MainTask(void *pvParameters) {
           practice_score = 0;
         }
 
+        if (btn3.wasPressed()) {
+          globalMessageBuffer = "";
+        }
+
         if (btn2.wasPressed()) {
           backToIdle(saved_item_selected);
           vTaskSuspend(practiceTaskHandle);
         }
         break;
-        
+
       case STATE_LOG:
+        if (btn2.wasPressed()) {
+          backToIdle(saved_item_selected);
+        }
         break;
 
       case STATE_SETTING:
@@ -1079,13 +1169,12 @@ void MainTask(void *pvParameters) {
         }
 
         if (btn2.wasPressed()) {
-          vTaskSuspend(commsTaskHandle);
           backToIdle(saved_item_selected);
         }
         break;
 
       case STATE_SETTING_DEVICENAME:
-        if (btn1.wasPressed()){
+        if (btn1.wasPressed()) {
           if (nameDevice.length() < 10) {
             nameDevice += letterItems[letterSelected];
           }
@@ -1097,12 +1186,14 @@ void MainTask(void *pvParameters) {
         if (btn2.wasPressed()) {
           currentState = STATE_SETTING;
           encoder.setCount(savedSettingSelected * 2);
+          Serial.println("In if Update DeviceName");
+          updateDeviceName(nameDevice);
         }
 
         break;
-        
+
       case STATE_SETTING_UNITTIME:
-        if (btn1.wasPressed()){
+        if (btn1.wasPressed()) {
           if (unitTimeBuffer.length() < 4) {
             unitTimeBuffer += numberItems[numberSelected];
           }
@@ -1110,10 +1201,10 @@ void MainTask(void *pvParameters) {
 
         if (btn3.wasPressed()) {
           if (unitTimeBuffer.length() > 0) {
-            unitTimeBuffer.remove(unitTimeBuffer.length()-1);            
+            unitTimeBuffer.remove(unitTimeBuffer.length() - 1);
           }
         }
-        
+
         if (btn2.wasPressed()) {
           if (unitTimeBuffer.length() > 0) {
             globalUnitTime = unitTimeBuffer.toFloat();
@@ -1125,12 +1216,13 @@ void MainTask(void *pvParameters) {
 
       case STATE_SETTING_TONE:
         if (btn1.isHeld()) {
-          buzFlag =1;
+          buzFlag = 1;
           globalBuzTone = toneFrequencies[toneSelected];
+          oldToneSelected = toneSelected;
         } else {
-          buzFlag =0;
+          buzFlag = 0;
         }
-        
+
         if (btn2.wasPressed()) {
           currentState = STATE_SETTING;
           encoder.setCount(savedSettingSelected * 2);
@@ -1143,7 +1235,6 @@ void MainTask(void *pvParameters) {
         }
         break;
     }
-
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
@@ -1154,8 +1245,6 @@ void backToIdle(int saved_item_selected) {
   currentState = STATE_IDLE;
   encoder.setCount(saved_item_selected * 2);
 }
-
-
 
 void loop() {
 }
